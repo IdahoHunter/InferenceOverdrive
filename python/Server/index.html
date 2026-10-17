@@ -1,0 +1,1654 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Server · Inference Overdrive</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M18 2 6 18h8l-2 12 12-16h-8z' fill='%23a6ff3d'/%3E%3C/svg%3E">
+<style>
+:root{
+  --bg:#05070b; --panel:#0a0e15; --panel2:#0e141e; --line:#18202c; --line2:#233042; --field:#080b11;
+  --text:#e9eef6; --muted:#8392a7; --dim:#4a5669;
+  --cyan:#38e1ff; --lime:#a6ff3d; --amber:#ffb224; --red:#ff4a5f; --violet:#a58bff;
+  --mono:"JetBrains Mono","Cascadia Mono","SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  --sans:Inter,"Segoe UI Variable","Segoe UI",system-ui,-apple-system,sans-serif;
+  --r:14px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+[hidden]{display:none!important}
+html{background:var(--bg)}
+body{min-height:100vh;padding:16px;color:var(--text);font:13px/1.45 var(--sans);-webkit-font-smoothing:antialiased;
+  background:radial-gradient(900px 420px at 0% 0%,rgba(56,225,255,.06),transparent),radial-gradient(900px 420px at 100% 0%,rgba(165,139,255,.05),transparent),var(--bg)}
+body::before{content:"";position:fixed;inset:0;pointer-events:none;
+  background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);
+  background-size:44px 44px;opacity:.2;-webkit-mask-image:radial-gradient(ellipse 80% 50% at 50% 0%,#000 20%,transparent 75%);mask-image:radial-gradient(ellipse 80% 50% at 50% 0%,#000 20%,transparent 75%)}
+.wrap{position:relative;max-width:1720px;margin:0 auto;display:grid;gap:12px}
+.mono,.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+a{color:var(--cyan);text-decoration:none}
+button{font:inherit;color:inherit;cursor:pointer}
+button:disabled{opacity:.4;cursor:not-allowed}
+:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+
+/* header */
+header{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:4px 2px 6px}
+.brand{display:flex;align-items:center;gap:14px}
+.mark{width:40px;height:40px;border-radius:11px;display:grid;place-items:center;background:linear-gradient(145deg,#141c28,#0a0f16);border:1px solid var(--line2)}
+.mark svg{width:22px;height:22px}
+.title h1{font:700 15px/1.1 var(--mono);letter-spacing:.22em}
+.title h1 span{color:var(--lime);font-weight:400}
+.title .sub{font:12px var(--mono);color:var(--muted)}
+.gpus{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.gpu{display:inline-flex;align-items:center;gap:8px;font:11px var(--mono);color:var(--muted);border:1px solid var(--line2);border-radius:8px;padding:5px 9px;background:rgba(255,255,255,.02)}
+.gpu b{color:var(--text);font-weight:600}
+.gpu .ix{font-weight:700;color:var(--bg);background:var(--cyan);border-radius:4px;padding:1px 5px}
+.gpu .m{width:42px;height:5px;border-radius:3px;background:#151c27;overflow:hidden}
+.gpu .m i{display:block;height:100%;background:var(--cyan)}
+.gpu.none{border-style:dashed}
+.gpupick{display:flex;flex-wrap:wrap;gap:8px}
+.gpupick label{display:flex;align-items:center;gap:8px;border:1px solid var(--line2);background:var(--field);border-radius:8px;padding:7px 10px;font:12px var(--mono);cursor:pointer}
+.gpupick input{accent-color:var(--lime);width:15px;height:15px}
+.gpupick label:has(input:checked){border-color:color-mix(in oklab,var(--lime) 55%,var(--line2))}
+nav{display:flex;gap:4px;padding:4px;border:1px solid var(--line2);border-radius:999px;background:rgba(255,255,255,.02)}
+nav a{font:600 10.5px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--muted);padding:7px 12px;border-radius:999px}
+nav a.on{background:var(--text);color:var(--bg)}
+.hdr-r{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.pill{display:inline-flex;align-items:center;gap:8px;font:700 11px/1 var(--mono);letter-spacing:.14em;padding:8px 12px;border-radius:999px;border:1px solid currentColor;color:var(--dim);background:color-mix(in oklab,currentColor 10%,transparent);white-space:nowrap}
+.pill i{width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 10px currentColor}
+.pill.running{color:var(--lime)} .pill.starting,.pill.stopping{color:var(--amber)} .pill.failed{color:var(--red)} .pill.stopped{color:var(--muted)}
+.pill.starting i,.pill.stopping i{animation:pulse 1s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.25;transform:scale(.7)}}
+
+/* panels */
+.panel{position:relative;background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--line);border-radius:var(--r);padding:16px;min-width:0}
+.panel::before{content:"";position:absolute;left:16px;right:16px;top:-1px;height:1px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.14),transparent)}
+.panel>h2{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:14px;font:600 10.5px/1 var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--muted)}
+.tag{font:600 9.5px/1 var(--mono);letter-spacing:.12em;color:var(--dim);border:1px solid var(--line2);border-radius:5px;padding:4px 6px;text-transform:uppercase}
+.lbl{font:600 10px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
+
+/* buttons */
+.btn{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line2);background:#101722;border-radius:9px;padding:9px 14px;font:600 11px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;transition:.15s}
+.btn:hover:not(:disabled){border-color:var(--muted)}
+.btn.primary{background:var(--lime);color:#0a1400;border-color:var(--lime);box-shadow:0 0 18px rgba(166,255,61,.25)}
+.btn.primary:hover:not(:disabled){filter:brightness(1.08)}
+.btn.danger{color:var(--red);border-color:color-mix(in oklab,var(--red) 40%,var(--line2))}
+.btn.ghost{background:transparent}
+.btn.sm{padding:6px 9px;font-size:10px;border-radius:7px}
+
+/* layout */
+.top{display:grid;grid-template-columns:1.1fr 1.1fr 1.4fr;gap:12px}
+.main{display:grid;grid-template-columns:1.55fr 1fr;gap:12px;align-items:start}
+.col{display:grid;gap:12px;min-width:0}
+
+/* backend cards */
+.be{position:relative;text-align:left;width:100%;border:1px solid var(--line);background:linear-gradient(180deg,var(--panel2),var(--panel));border-radius:var(--r);padding:16px;transition:.2s;overflow:hidden}
+.be:hover{border-color:var(--line2)}
+.be.sel{border-color:var(--lime);box-shadow:0 0 0 1px var(--lime) inset,0 0 28px rgba(166,255,61,.12)}
+.be .name{font:700 22px/1 var(--mono);letter-spacing:-.01em;display:flex;align-items:center;gap:10px}
+.be .ver{font:11px var(--mono);color:var(--muted);margin-top:8px}
+.be p{color:var(--muted);font-size:12px;margin-top:10px;max-width:46ch}
+.be .live{position:absolute;top:14px;right:52px}
+/* gear: opens this backend's form editor */
+.be .gear{position:absolute;top:10px;right:10px;width:30px;height:30px;display:grid;place-items:center;border:1px solid var(--line2);border-radius:8px;color:var(--muted);background:rgba(0,0,0,.25);cursor:pointer;transition:.15s}
+.be .gear:hover,.be .gear:focus-visible{color:var(--cyan);border-color:var(--cyan);outline:none}
+.be .gear.on{color:#001018;background:var(--cyan);border-color:var(--cyan)}
+.be .gear svg{width:15px;height:15px}
+.be .gear[aria-expanded="true"]{color:var(--cyan);border-color:var(--cyan)}
+/* gear menu */
+.gmenu{position:absolute;z-index:20;min-width:240px;padding:6px;border:1px solid var(--line2);border-radius:11px;background:linear-gradient(180deg,var(--panel2),var(--panel));box-shadow:0 14px 40px rgba(0,0,0,.55),0 0 0 1px rgba(56,225,255,.06);display:grid;gap:2px}
+.gm-h{font:600 9.5px var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--dim);padding:6px 10px 4px}
+.gm-i{display:flex;align-items:center;gap:10px;width:100%;padding:8px 10px;border:0;border-radius:7px;background:transparent;color:var(--text);font:12px var(--mono);text-align:left;cursor:pointer}
+.gm-i:hover,.gm-i:focus-visible,.gm-i:focus-within{background:color-mix(in oklab,var(--cyan) 9%,transparent);outline:none}
+.gm-i:disabled{opacity:.5;cursor:default}
+.gm-i svg{width:15px;height:15px;flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;color:var(--muted)}
+.gm-i span:first-of-type{flex:1}
+.gm-i.sw{color:var(--text)}
+.gm-k{font:700 9px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;padding:3px 5px;border-radius:4px;background:var(--cyan);color:#001018}
+.gm-sep{height:1px;background:var(--line);margin:4px 6px}
+.gm-note{font:10.5px var(--mono);color:var(--dim);padding:2px 10px 6px;line-height:1.5}
+.gm-note .up{color:var(--amber)}
+.be .upd{margin-top:6px;font:10.5px var(--mono);color:var(--dim)}
+.be .upd .chip{color:var(--amber);background:color-mix(in oklab,var(--amber) 12%,#151c27)}
+.be .radio{width:16px;height:16px;border-radius:50%;border:2px solid var(--line2);flex:none}
+.be.sel .radio{border-color:var(--lime);background:radial-gradient(var(--lime) 40%,transparent 45%)}
+
+/* status card */
+.status-row{display:flex;gap:18px;flex-wrap:wrap;margin-bottom:12px}
+.status-row div{min-width:80px}
+.status-row .num{display:block;font-size:15px;font-weight:600;margin-top:6px;white-space:nowrap}
+.bar{height:8px;border-radius:4px;background:#111823;overflow:hidden;margin-top:6px}
+.bar i{display:block;height:100%;width:0;border-radius:4px;transition:width .5s}
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+.dirty{font:600 10px/1 var(--mono);letter-spacing:.12em;color:var(--amber);display:none;align-items:center;gap:6px}
+.dirty.on{display:inline-flex}
+.err{color:var(--red);font:12px var(--mono);margin-top:10px;white-space:pre-wrap;word-break:break-word}
+
+/* params */
+.groups{display:grid;gap:18px}
+.group h3{font:600 10px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--cyan);margin-bottom:10px;display:flex;align-items:center;gap:10px}
+.group h3::after{content:"";flex:1;height:1px;background:var(--line)}
+.fields{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px 14px}
+/* align-content:start: a field next to a taller one must not stretch its own rows (the control grew) */
+.f{display:grid;gap:5px;min-width:0;align-content:start}
+.f.wide{grid-column:1/-1}
+/* one-line label: name keeps its width, the flag shrinks with an ellipsis (full text in the title) */
+.f label{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:12px;line-height:17px;color:var(--text);min-width:0}
+.f label span{flex:none;white-space:nowrap}
+.f label code{flex:0 1 auto;min-width:0;font:10.5px var(--mono);color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.f small{font-size:11px;color:var(--dim)}
+input,select,textarea{width:100%;font:12.5px var(--mono);color:var(--text);background:var(--field);border:1px solid var(--line2);border-radius:8px;padding:8px 10px;min-width:0}
+/* every single-line control (inputs, selects, the default/on/off switch) is the same height */
+input:not([type=checkbox]):not([type=radio]),select,.seg{height:35px}
+textarea{resize:vertical;min-height:38px}
+input::placeholder,textarea::placeholder{color:#3c4757}
+input:focus,select:focus,textarea:focus{border-color:var(--cyan);outline:none;box-shadow:0 0 0 3px rgba(56,225,255,.12)}
+.f.set input,.f.set select,.f.set textarea{border-color:color-mix(in oklab,var(--lime) 35%,var(--line2))}
+.seg{display:grid;grid-template-columns:repeat(3,1fr);border:1px solid var(--line2);border-radius:8px;overflow:hidden;background:var(--field)}
+.seg button{border:0;background:transparent;padding:0;font:600 10.5px/1 var(--mono);letter-spacing:.08em;color:var(--dim)}
+.seg button+button{border-left:1px solid var(--line2)}
+.seg button.on{color:var(--bg);background:var(--muted)}
+.seg button.on.y{background:var(--lime)} .seg button.on.n{background:var(--red);color:#fff}
+
+/* chat template field + editor */
+.tplrow{display:grid;grid-template-columns:1fr auto auto;gap:8px}
+.hfrow{display:grid;gap:8px}
+dialog.tpl{margin:auto;width:min(1100px,calc(100vw - 32px));max-height:calc(100vh - 32px);padding:0;border:1px solid var(--line2);border-radius:var(--r);background:var(--panel);color:var(--text)}
+dialog.tpl::backdrop{background:rgba(2,4,8,.72);backdrop-filter:blur(2px)}
+.tpl-in{display:grid;gap:12px;padding:16px}
+.tpl-h{display:flex;justify-content:space-between;align-items:center;gap:10px;font:600 10.5px/1 var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--muted)}
+.tpl-bar{display:grid;grid-template-columns:minmax(160px,260px) 1fr;gap:8px;align-items:center}
+.tpl-bar .acts{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.tpl-body{display:grid;grid-template-columns:1.4fr 1fr;gap:12px;min-height:0}
+.tpl-body textarea{height:min(58vh,560px);font:12px/1.5 var(--mono);white-space:pre;tab-size:2;resize:vertical}
+.tpl-out{display:grid;grid-template-rows:auto 1fr;gap:6px;min-width:0}
+.tpl-out pre{margin:0;height:min(58vh,560px);overflow:auto;font:11.5px/1.5 var(--mono);white-space:pre-wrap;word-break:break-word;background:#04060a;border:1px solid var(--line);border-radius:8px;padding:10px;color:#9fb0c6}
+.tpl-msg{font:12px var(--mono);color:var(--muted)}
+.tpl-msg.ok{color:var(--lime)} .tpl-msg.bad{color:var(--red)} .tpl-msg.warn{color:var(--amber)}
+@media (max-width:860px){.tpl-body{grid-template-columns:1fr}.tpl-bar{grid-template-columns:1fr}}
+
+/* boot default + hf token */
+.boot{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:0 0 16px;padding:10px 12px;border:1px dashed var(--line2);border-radius:10px;font-size:12px;color:var(--muted)}
+.boot b{color:var(--text);font-family:var(--mono);font-weight:600}
+.bact{display:flex;gap:6px;flex-wrap:wrap}
+.tokbtn{font:600 9.5px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;border:1px solid var(--line2);border-radius:5px;padding:5px 7px;background:transparent;color:var(--dim);cursor:pointer}
+.tokbtn:hover{border-color:var(--muted);color:var(--text)}
+.tokbtn.ok{color:var(--lime);border-color:color-mix(in oklab,var(--lime) 45%,var(--line2))}
+.tokbtn.bad{color:var(--amber);border-color:color-mix(in oklab,var(--amber) 45%,var(--line2))}
+.tokform{display:grid;grid-template-columns:1fr auto auto auto;gap:8px;align-items:center;margin-bottom:12px;padding:10px;border:1px solid var(--line2);border-radius:10px;background:var(--panel2)}
+.tokform small{grid-column:1/-1;color:var(--dim);font-size:11px}
+
+/* model settings strip + tune banner */
+.prefs{display:flex;gap:8px 18px;flex-wrap:wrap;align-items:center;padding:10px 12px;margin:-2px 0 16px;border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.015)}
+.sw{display:inline-flex;align-items:center;gap:9px;font-size:12px;color:var(--muted);cursor:pointer;user-select:none}
+.sw input{position:absolute;opacity:0;width:0;height:0}
+.sw i{width:30px;height:17px;border-radius:999px;background:#1a2230;border:1px solid var(--line2);position:relative;transition:.15s;flex:none}
+.sw i::after{content:"";position:absolute;top:2px;left:2px;width:11px;height:11px;border-radius:50%;background:var(--muted);transition:.15s}
+.sw input:checked+i{background:color-mix(in oklab,var(--lime) 25%,#1a2230);border-color:var(--lime)}
+.sw input:checked+i::after{left:15px;background:var(--lime)}
+.sw input:focus-visible+i{outline:2px solid var(--cyan);outline-offset:2px}
+.prefs .btn{margin-left:auto}
+.tune{border:1px solid color-mix(in oklab,var(--violet) 45%,var(--line));background:color-mix(in oklab,var(--violet) 6%,transparent);border-radius:10px;padding:12px 14px;margin-bottom:16px}
+.tune-h{display:flex;justify-content:space-between;gap:10px;align-items:center;font:600 12px var(--mono)}
+.tune-h b{color:var(--violet)}
+.tune ul{list-style:none;margin-top:8px;display:grid;gap:3px}
+.tune li{font-size:12px;color:var(--muted)}
+.tune li.w{color:var(--amber)}
+.tune .chg{display:flex;flex-wrap:wrap;gap:5px;margin-top:9px}
+.tune .chg span{font:11px var(--mono);padding:3px 7px;border-radius:5px;background:#121924;color:var(--muted)}
+.tune .chg span b{color:var(--text);font-weight:600}
+/* model-card flags inside the auto-tune box */
+.card-s{margin-top:10px;padding-top:10px;border-top:1px solid color-mix(in oklab,var(--violet) 30%,var(--line));display:grid;gap:8px}
+.card-s .card-h{display:flex;justify-content:space-between;align-items:center;gap:10px;font:600 11px var(--mono);color:var(--violet);letter-spacing:.06em}
+.card-g{display:grid;gap:3px}
+.card-src{font:10px var(--mono);color:var(--dim);text-transform:uppercase;letter-spacing:.1em}
+.card-r{display:grid;grid-template-columns:auto auto 1fr;gap:8px;align-items:baseline;font-size:11.5px;color:var(--muted);cursor:pointer}
+.card-r input{accent-color:var(--violet);width:14px;height:14px;align-self:center}
+.card-r code{font:11.5px var(--mono);color:var(--text);word-break:break-all}
+.card-r small{color:var(--dim)}
+.card-r:has(input:disabled){opacity:.55;cursor:default}
+/* smoke test (status panel) */
+.smoke{margin-top:12px;display:grid;gap:6px}
+.smoke:empty{display:none}
+.sm-h{display:flex;align-items:center;gap:8px;font:600 9.5px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
+.sm-h .btn{margin-left:auto}
+.sm-i{display:grid;grid-template-columns:78px auto 1fr;gap:8px;align-items:baseline;font:11.5px var(--mono);color:var(--muted)}
+.sm-i b{color:var(--text);font-weight:600}
+.sm-i .st{font-weight:700}
+.sm-i.ok .st{color:var(--lime)} .sm-i.fail .st{color:var(--red)} .sm-i.warn .st,.sm-i.off .st{color:var(--amber)} .sm-i.na .st{color:var(--dim)}
+.sm-i.fail span:last-child{color:var(--red)}
+.sm-note{font:11px var(--mono);color:var(--dim)}
+.qnote{padding:8px 12px;border-bottom:1px solid var(--line);font-size:12px;color:var(--amber);background:color-mix(in oklab,var(--amber) 5%,transparent)}
+.f small.filt{color:var(--dim)}
+/* flags checked against the installed version's --help */
+.iss-list{display:grid;gap:6px;margin:0 0 14px;padding:10px 12px;border:1px solid color-mix(in oklab,var(--red) 40%,var(--line2));border-radius:10px;background:color-mix(in oklab,var(--red) 4%,transparent);font-size:12px;color:var(--muted)}
+.iss-list.warn{border-color:color-mix(in oklab,var(--amber) 40%,var(--line2));background:color-mix(in oklab,var(--amber) 4%,transparent)}
+.iss-list b{color:var(--text)}
+.iss-i{display:flex;gap:8px;align-items:baseline}
+.chip.removed,.chip.bad-value{color:var(--red)} .chip.deprecated{color:var(--amber)}
+.iss-note{font:11px var(--mono);color:var(--dim);margin:0 0 12px}
+.f.iss-removed :is(input,select,textarea,.seg),.f.iss-bad-value :is(input,select,textarea,.seg),.xrow.iss-removed .xf,.xrow.iss-bad-value .xf{border-color:var(--red)}
+.f.iss-deprecated :is(input,select,textarea,.seg),.xrow.iss-deprecated .xf{border-color:var(--amber)}
+.f small.iss{color:var(--red)} .f small.iss.deprecated{color:var(--amber)}
+.boot .bwarn{flex-basis:100%;color:var(--amber)}
+/* form editor */
+.fe{border:1px solid color-mix(in oklab,var(--cyan) 40%,var(--line2));border-radius:10px;padding:12px;margin:0 0 16px;background:color-mix(in oklab,var(--cyan) 3%,transparent);display:grid;gap:10px}
+.fe-h{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.fe-h b{font:600 11px var(--mono);color:var(--cyan);letter-spacing:.12em;text-transform:uppercase}
+.fe-p{font-size:12px;color:var(--muted)}
+.fe-res{max-height:250px;overflow:auto;border:1px solid var(--line);border-radius:8px}
+.fe-r{display:block;width:100%;text-align:left;padding:8px 12px;border:0;border-bottom:1px solid var(--line);background:transparent;color:var(--text);cursor:pointer}
+.fe-r:hover:not(:disabled){background:color-mix(in oklab,var(--cyan) 6%,transparent)}
+.fe-r.sel{background:color-mix(in oklab,var(--cyan) 12%,transparent);box-shadow:inset 3px 0 var(--cyan)}
+.fe-r:disabled{opacity:.5;cursor:default}
+.fe-r b{font:600 12px var(--mono)} .fe-r b span{color:var(--muted);font-weight:400}
+.fe-r p{font-size:11.5px;color:var(--muted);margin-top:3px}
+.fe-r .chip{float:right}
+.fe-add{border:1px solid var(--line2);border-radius:8px;padding:10px;display:grid;gap:10px;background:var(--panel2)}
+.fe-add-h{display:flex;gap:10px;align-items:baseline;font:12px var(--mono)}
+.fe-add-h code{color:var(--lime)} .fe-add-h span{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.1em}
+.fe-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}
+.fe-grid label{display:grid;gap:4px;font-size:11px;color:var(--muted);align-content:start}
+.fe-add-a{display:flex;gap:8px}
+.groups.editing .f{padding:8px;border:1px dashed var(--line2);border-radius:9px}
+.fe-tools{display:flex;gap:4px;align-items:center}
+.fe-tools .fe-sec{height:28px;padding:3px 6px;font-size:11px;flex:1}
+.fe-b{width:28px;height:28px;flex:none;border:1px solid var(--line2);border-radius:7px;background:#101722;color:var(--muted);font:12px var(--mono);cursor:pointer}
+.fe-b:hover:not(:disabled){color:var(--cyan);border-color:var(--cyan)}
+.fe-b:disabled{opacity:.35;cursor:default}
+.fe-b.rm:hover:not(:disabled){color:var(--red);border-color:var(--red)}
+.fe-gt{display:inline-flex;gap:4px}
+.fe-gt .fe-b{width:22px;height:22px;font-size:10px}
+
+/* extra flags */
+.xrow{display:grid;grid-template-columns:auto 1.1fr 1fr auto;gap:8px;align-items:center;margin-bottom:8px}
+.xrow input[type=checkbox]{width:16px;height:16px;accent-color:var(--lime)}
+.cat{margin-top:12px;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.cat-h{display:flex;gap:8px;padding:10px;background:var(--panel2);border-bottom:1px solid var(--line)}
+.cat-list{max-height:320px;overflow:auto}
+.cat-item{display:grid;grid-template-columns:1fr auto;gap:10px;padding:9px 12px;border-bottom:1px solid var(--line);align-items:start}
+.cat-item:hover{background:rgba(255,255,255,.02)}
+.cat-item b{font:600 12px var(--mono);color:var(--text)}
+.cat-item b span{color:var(--muted);font-weight:400}
+.cat-item p{font-size:11.5px;color:var(--muted);margin-top:3px}
+.cat-item .g{font:9.5px var(--mono);color:var(--dim);letter-spacing:.1em;text-transform:uppercase}
+
+/* command preview */
+.cmd{font:12px/1.6 var(--mono);background:var(--field);border:1px solid var(--line);border-radius:10px;padding:12px 14px;white-space:pre-wrap;word-break:break-all;color:var(--muted);max-height:220px;overflow:auto}
+.cmd .b{color:var(--lime)} .cmd .fl{color:var(--cyan)}
+
+/* models */
+.disk{display:flex;justify-content:space-between;font:12px var(--mono);color:var(--muted)}
+table{width:100%;border-collapse:collapse;font:12px var(--mono)}
+th{text-align:left;font:600 9.5px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dim);padding:0 8px 8px 0}
+td{padding:8px 8px 8px 0;border-top:1px solid var(--line);vertical-align:middle}
+td.r,th.r{text-align:right}
+td.path{word-break:break-all}
+.chip{display:inline-block;font:700 9px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;padding:4px 6px;border-radius:5px;background:#151c27;color:var(--muted)}
+.chip.model{color:var(--cyan)} .chip.draft{color:var(--violet)} .chip.mmproj{color:var(--amber)} .chip.use{background:var(--lime);color:#0a1400}
+.empty{color:var(--dim);font:12px var(--mono);padding:14px 0}
+
+/* downloads */
+.dl-form{display:grid;grid-template-columns:1fr 130px auto;gap:8px}
+.hf-filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:8px;margin-top:8px;align-items:center}
+.hf-filters label{display:grid;grid-template-columns:auto 1fr;gap:8px;align-items:center;font:11px var(--mono);color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.hf-filters .link{background:none;border:0;padding:0;font:12px var(--mono);color:var(--cyan);cursor:pointer}
+.files{margin-top:12px;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.files-h{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px;background:var(--panel2);border-bottom:1px solid var(--line)}
+.files-h input[type=text]{flex:1;min-width:120px}
+.files-list{max-height:260px;overflow:auto}
+/* hf browser: repo list, breadcrumb, quant table */
+#hfBrowse:not(:empty){margin-top:12px}
+.crumbs{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font:12px var(--mono);color:var(--muted);margin-bottom:8px}
+.crumbs b{color:var(--text)}
+.crumbs .link{background:none;border:0;padding:0;font:inherit;color:var(--cyan);cursor:pointer}
+.crumbs .sp{flex:1}
+.repo-list{display:grid;max-height:340px;overflow:auto;border:1px solid var(--line);border-radius:10px}
+.repo{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;text-align:left;padding:9px 12px;border:0;border-bottom:1px solid var(--line);background:transparent;font:12px var(--mono);color:var(--text);cursor:pointer}
+.repo:hover,.repo:focus-visible{background:rgba(56,225,255,.06)}
+.repo .rm{display:flex;gap:5px;align-items:center;color:var(--muted);font-size:11px;white-space:nowrap}
+.qplan{padding:10px 12px;border-bottom:1px solid var(--line);background:var(--panel2);font-size:12px;color:var(--muted);display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.qplan b{color:var(--text)}
+.qtab{max-height:260px;overflow:auto;border-bottom:1px solid var(--line)}
+.qtab label{display:grid;grid-template-columns:auto minmax(110px,1fr) auto auto auto;gap:10px;align-items:center;padding:7px 12px;border-bottom:1px solid var(--line);font:12px var(--mono);cursor:pointer}
+.qtab label:hover{background:rgba(255,255,255,.02)}
+.qtab label.rec{background:color-mix(in oklab,var(--lime) 7%,transparent)}
+.qtab input{accent-color:var(--lime);width:15px;height:15px}
+.chip.fits{color:var(--lime)} .chip.tight{color:var(--amber)} .chip.offload,.chip.too-big{color:var(--red)} .chip.tp{color:var(--cyan)}
+.chip.star{background:var(--lime);color:#0a1400}
+.files-list label{display:grid;grid-template-columns:auto 1fr auto;gap:10px;padding:7px 12px;border-bottom:1px solid var(--line);font:12px var(--mono);cursor:pointer;align-items:center}
+.files-list label:hover{background:rgba(255,255,255,.02)}
+.files-list input{width:15px;height:15px;accent-color:var(--lime)}
+.files-f{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:10px 12px;background:var(--panel2)}
+.radio-row{display:flex;gap:14px;font-size:12px;color:var(--muted)}
+.radio-row label{display:flex;gap:6px;align-items:center;cursor:pointer}
+.radio-row input{accent-color:var(--lime)}
+.job{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-top:10px}
+.job-h{display:flex;justify-content:space-between;gap:8px;align-items:center;font:12px var(--mono)}
+.job .bar i{background:linear-gradient(90deg,var(--violet),var(--cyan))}
+.job.done .bar i{background:var(--lime)} .job.failed .bar i{background:var(--red)}
+.job-f{display:flex;justify-content:space-between;font:11px var(--mono);color:var(--muted);margin-top:6px;gap:8px}
+
+/* logs */
+.logs{font:11.5px/1.55 var(--mono);background:#04060a;border:1px solid var(--line);border-radius:10px;padding:10px 12px;height:420px;overflow:auto;white-space:pre-wrap;word-break:break-word;color:#9fb0c6}
+.logs .c{color:var(--lime)} .logs .e{color:var(--red)} .logs .w{color:var(--amber)} .logs .s{color:var(--cyan)}
+.log-h{display:flex;gap:8px;margin-bottom:10px}
+.log-h input[type=text]{flex:1}
+.chk{display:inline-flex;align-items:center;gap:6px;font:11px var(--mono);color:var(--muted);white-space:nowrap}
+.chk input{width:14px;height:14px;accent-color:var(--lime)}
+
+.toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%) translateY(20px);opacity:0;background:var(--text);color:var(--bg);font:600 12px var(--mono);padding:10px 16px;border-radius:10px;transition:.25s;z-index:10;max-width:calc(100vw - 32px)}
+.toast.on{opacity:1;transform:translateX(-50%)}
+.toast.bad{background:var(--red);color:#fff}
+
+@media (max-width:1280px){.top{grid-template-columns:1fr 1fr}.top .status{grid-column:1/-1}.main{grid-template-columns:1fr}}
+@media (max-width:720px){body{padding:10px}.top{grid-template-columns:1fr}.dl-form,.hf-filters{grid-template-columns:1fr}.xrow{grid-template-columns:auto 1fr auto}.xrow .xv{grid-column:2/3}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="brand">
+    <div class="mark"><svg viewBox="0 0 24 24"><path d="M13.5 1.5 4 13.5h6.5L9 22.5l10-13h-6.5z" fill="var(--lime)"/></svg></div>
+    <div class="title"><h1>INFERENCE <span>OVERDRIVE</span></h1><div class="sub">server control</div>
+      <div class="gpus" id="gpus" aria-label="Detected GPUs"><span class="gpu none">detecting GPUs…</span></div></div>
+  </div>
+  <nav><a href="../monitor/">Monitor</a><a href="./" class="on">Server</a><a id="navChat" href="#" target="_blank" rel="noopener" title="Open WebUI">Chat ↗</a></nav>
+  <div class="hdr-r">
+    <button class="btn sm ghost" id="tokenBtn" hidden>Admin token</button>
+    <span class="pill" id="pill"><i></i><span>CONNECTING</span></span>
+  </div>
+</header>
+
+<section class="top">
+  <button class="be" data-be="llama.cpp">
+    <div class="name"><span class="radio"></span>llama.cpp</div>
+    <div class="ver" id="verLlama">--</div>
+    <div class="upd" id="updLlama" hidden></div>
+    <span class="gear" data-gear="llama.cpp" role="button" tabindex="0" title="llama.cpp options: edit form, update check" aria-label="llama.cpp options"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span>
+    <p>GGUF models, DFlash2 speculative decoding, vision via mmproj. Best single-user latency on the 3090.</p>
+    <span class="pill live" hidden><i></i><span>ACTIVE</span></span>
+  </button>
+  <button class="be" data-be="vllm">
+    <div class="name"><span class="radio"></span>vLLM</div>
+    <div class="ver" id="verVllm">--</div>
+    <div class="upd" id="updVllm" hidden></div>
+    <span class="gear" data-gear="vllm" role="button" tabindex="0" title="vllm options: edit form, update check" aria-label="vllm options"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span>
+    <p>Hugging Face safetensors (AWQ, GPTQ, FP8…), continuous batching, prefix caching. Best for many concurrent requests.</p>
+    <span class="pill live" hidden><i></i><span>ACTIVE</span></span>
+  </button>
+  <div class="panel status">
+    <h2>Backend <span class="dirty" id="dirty">● unsaved changes</span></h2>
+    <div class="status-row">
+      <div><span class="lbl">Running</span><span class="num" id="sKind">--</span></div>
+      <div><span class="lbl">State</span><span class="num" id="sState">--</span></div>
+      <div><span class="lbl">Uptime</span><span class="num" id="sUp">--</span></div>
+      <div><span class="lbl">PID</span><span class="num" id="sPid">--</span></div>
+    </div>
+    <div class="disk"><span>VRAM</span><span id="vramTxt">--</span></div>
+    <div class="bar"><i id="vramBar" style="background:var(--cyan)"></i></div>
+    <div class="actions">
+      <button class="btn primary" id="applyBtn">Apply &amp; restart</button>
+      <button class="btn" id="saveBtn">Save</button>
+      <button class="btn" id="startBtn">Start</button>
+      <button class="btn danger" id="stopBtn">Stop</button>
+      <button class="btn ghost" id="revertBtn">Revert</button>
+    </div>
+    <div class="err" id="sErr"></div>
+    <div class="smoke" id="smoke"></div>
+  </div>
+</section>
+
+<section class="main">
+  <div class="col">
+    <div class="panel">
+      <h2><span id="paramTitle">Parameters</span></h2>
+      <div class="prefs">
+        <label class="sw" title="Target picker shows models only; draft and projector pickers show only files that belong to the chosen target (from GGUF metadata)."><input type="checkbox" id="prefFilter"><i></i>Smart model filter</label>
+        <label class="sw" title="When the model changes, prefill context size, sampling, draft/projector, parsers and memory settings from the model's metadata."><input type="checkbox" id="prefTune"><i></i>Auto-tune on model change</label>
+        <button class="btn sm" id="tuneBtn" type="button">Suggest settings</button>
+      </div>
+      <div class="boot" id="boot"></div>
+      <div id="tune"></div>
+      <div id="formEd"></div>
+      <div id="issues"></div>
+      <div class="groups" id="groups"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Additional flags <span class="tag" id="xTag">0</span></h2>
+      <div id="xrows"></div>
+      <div class="actions" style="margin-top:4px">
+        <button class="btn sm" id="xAdd">+ Add flag</button>
+        <button class="btn sm ghost" id="catBtn">Browse all flags</button>
+      </div>
+      <div class="cat" id="cat" hidden>
+        <div class="cat-h"><input type="text" id="catQ" placeholder="search every flag, e.g. rope, lora, cache, eagle…"><span class="tag" id="catN">--</span></div>
+        <div class="cat-list" id="catList"><div class="empty" style="padding:14px">loading…</div></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Command <span class="tag">preview</span></h2>
+      <div class="cmd" id="cmd">--</div>
+    </div>
+  </div>
+
+  <div class="col">
+    <div class="panel">
+      <h2>Models <span class="tag" id="mTag">/models</span></h2>
+      <div class="disk"><span>Disk</span><span id="diskTxt">--</span></div>
+      <div class="bar"><i id="diskBar" style="background:var(--violet)"></i></div>
+      <div id="models" style="margin-top:14px"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Download from Hugging Face <button class="tokbtn" id="tokBtn" type="button" title="Hugging Face token for gated / private repos — click to set">HF token: …</button></h2>
+      <div class="tokform" id="tokForm" hidden>
+        <input type="password" id="tokIn" placeholder="hf_…" autocomplete="off" spellcheck="false" aria-label="Hugging Face token">
+        <button class="btn sm primary" id="tokSave" type="button">Save</button>
+        <button class="btn sm danger" id="tokDel" type="button">Remove</button>
+        <button class="btn sm ghost" id="tokX" type="button">Cancel</button>
+        <small id="tokNote">Checked against Hugging Face, then saved to state/hf_token (owner-only). Used for downloads and vLLM model pulls. Create one at huggingface.co/settings/tokens (read access is enough).</small>
+      </div>
+      <form class="dl-form" id="dlForm">
+        <input type="text" id="dlRepo" placeholder="owner, owner/repo, or search — e.g. unsloth, unsloth/Qwen3.8-27B-GGUF, qwen 27b awq" autocomplete="off" spellcheck="false" aria-label="Hugging Face owner, repo or search">
+        <input type="text" id="dlRev" placeholder="revision" autocomplete="off" aria-label="Revision (branch, tag or commit)">
+        <button class="btn" id="dlBrowse">Browse</button>
+      </form>
+      <div class="hf-filters" id="hfFilters">
+        <label>Task <select id="fTask" aria-label="Model task">
+          <option value="">any task</option>
+          <optgroup label="Text"><option>text-generation</option><option>feature-extraction</option><option>sentence-similarity</option><option>text-ranking</option><option>text-classification</option><option>translation</option><option>summarization</option></optgroup>
+          <optgroup label="Multimodal"><option>image-text-to-text</option><option>video-text-to-text</option><option>audio-text-to-text</option><option>any-to-any</option><option>visual-document-retrieval</option></optgroup>
+          <optgroup label="Vision"><option>text-to-image</option><option>image-to-image</option><option>image-to-text</option><option>text-to-video</option><option>image-to-video</option><option>image-classification</option><option>object-detection</option><option>image-segmentation</option><option>depth-estimation</option></optgroup>
+          <optgroup label="Audio"><option>automatic-speech-recognition</option><option>text-to-speech</option><option>text-to-audio</option><option>audio-classification</option></optgroup>
+        </select></label>
+        <label>Format <select id="fFmt" aria-label="Model format">
+          <option value="">any format</option><option value="gguf">GGUF (llama.cpp)</option><option value="safetensors">safetensors (vLLM)</option><option value="awq">AWQ</option><option value="gptq">GPTQ</option><option value="fp8">FP8</option><option value="compressed-tensors">compressed-tensors</option><option value="bitsandbytes">bitsandbytes</option><option value="mlx">MLX</option><option value="exl2">EXL2</option>
+        </select></label>
+        <label>Sort <select id="fSort" aria-label="Sort order">
+          <option value="downloads">most downloads</option><option value="trendingScore">trending</option><option value="likes">most likes</option><option value="lastModified">recently updated</option><option value="createdAt">newest</option>
+        </select></label>
+        <button class="link" type="button" id="fClear" hidden>clear filters</button>
+      </div>
+      <div id="hfBrowse"></div>
+      <div class="files" id="files" hidden>
+        <div id="quants"></div>
+        <div class="files-h">
+          <input type="text" id="fQ" placeholder="filter files, e.g. Q4_K_M">
+          <button class="btn sm ghost" id="fAll" type="button">Select shown</button>
+          <button class="btn sm ghost" id="fNone" type="button">Clear</button>
+        </div>
+        <div class="files-list" id="fList"></div>
+        <div class="files-f">
+          <div class="radio-row">
+            <label><input type="radio" name="layout" value="gguf" checked> files → /models</label>
+            <label title="Hugging Face hub cache in /models (models--owner--name): vLLM loads it by repo id; huggingface-cli sees the same copy"><input type="radio" name="layout" value="hf"> whole repo → HF cache in /models</label>
+          </div>
+          <span class="mono" style="color:var(--muted);font-size:12px" id="fSel">0 files</span>
+          <button class="btn primary sm" id="dlGo" type="button">Download</button>
+        </div>
+      </div>
+      <div id="jobs"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Backend log <span class="tag" id="logTag">0 lines</span></h2>
+      <div class="log-h">
+        <input type="text" id="logQ" placeholder="filter">
+        <label class="chk"><input type="checkbox" id="logFollow" checked> follow</label>
+        <button class="btn sm ghost" id="logClear">Clear</button>
+      </div>
+      <div class="logs" id="logs"></div>
+    </div>
+  </div>
+</section>
+</div>
+<dialog class="tpl" id="tplDlg" aria-labelledby="tplTitle">
+  <div class="tpl-in">
+    <div class="tpl-h"><span id="tplTitle">Chat template</span><button class="btn sm ghost" id="tplClose" type="button">Close</button></div>
+    <div class="tpl-bar">
+      <input type="text" id="tplName" placeholder="template name, e.g. qwen-no-think" spellcheck="false" aria-label="Template name">
+      <span class="acts">
+        <button class="btn sm" id="tplFromModel" type="button" title="Replace the editor contents with the selected model's own template">Load model's template</button>
+        <button class="btn sm" id="tplCheck" type="button">Check &amp; preview</button>
+        <button class="btn sm danger" id="tplDelete" type="button">Delete</button>
+        <button class="btn sm primary" id="tplSave" type="button">Save &amp; use</button>
+      </span>
+    </div>
+    <div class="tpl-body">
+      <textarea id="tplText" spellcheck="false" aria-label="Jinja template" placeholder="{%- for message in messages %}…{%- endfor %}"></textarea>
+      <div class="tpl-out">
+        <span class="tpl-msg" id="tplMsg">Rendered with a sample system / user / assistant / user conversation and add_generation_prompt.</span>
+        <pre id="tplPreview"></pre>
+      </div>
+    </div>
+  </div>
+</dialog>
+<div class="toast" id="toast"></div>
+<div class="gmenu" id="gmenu" role="menu" aria-labelledby="gmTitle" hidden>
+  <div class="gm-h" id="gmTitle">llama.cpp</div>
+  <button type="button" class="gm-i" id="gmEdit" role="menuitemcheckbox" aria-checked="false">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h10M4 18h8M18 14v8M14 18h8"/></svg>
+    <span>Edit form</span><span class="gm-k" id="gmEditOn" hidden>on</span></button>
+  <div class="gm-sep"></div>
+  <label class="gm-i sw" role="menuitemcheckbox" title="Once a day, ask GitHub (llama.cpp releases) and PyPI (vLLM) whether a newer version is out. Nothing is installed: the backend card shows what to set in .env before rebuilding."><input type="checkbox" id="prefUpd"><i></i><span>Daily update check</span></label>
+  <label class="gm-i sw" role="menuitemcheckbox" title="When a model finishes loading, send it two small requests: one that should come back as a parsed tool call, one whose reasoning should be split out. Shows whether the tool-call / reasoning parsers really work for this model."><input type="checkbox" id="prefSmoke"><i></i><span>Smoke test after load</span></label>
+  <div class="gm-sep"></div>
+  <button type="button" class="gm-i" id="updBtn" role="menuitem" title="Check for newer llama.cpp / vLLM releases now">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></svg>
+    <span>Check for updates now</span></button>
+  <div class="gm-note" id="gmUpd"></div>
+</div>
+
+<script>
+"use strict";
+const API = new URL("api/", location.href).href;
+const HW = new URL("../monitor/hw", location.href).href;
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const gb = b => b == null ? "--" : b >= 2**30 ? (b / 2**30).toFixed(1) + " GB" : (b / 2**20).toFixed(0) + " MB";
+const dur = s => s == null ? "--" : s < 60 ? Math.round(s) + "s" : s < 3600 ? Math.floor(s / 60) + "m " + Math.floor(s % 60) + "s" : Math.floor(s / 3600) + "h " + Math.floor(s % 3600 / 60) + "m";
+const clone = o => JSON.parse(JSON.stringify(o));
+const S = {state: null, schema: null, models: null, draft: null, saved: null, catalog: {}, logSeq: 0, logs: [], files: null, renderedFor: null};
+
+// ── API with optional admin token ───────────────────────────────────────
+const tokenKey = "io-admin-token";
+const getToken = () => { try { return localStorage.getItem(tokenKey) || ""; } catch { return ""; } };
+function askToken() {
+  const t = prompt("Admin token (SERVER_ADMIN_TOKEN):", getToken());
+  if (t != null) try { localStorage.setItem(tokenKey, t.trim()); } catch {}
+}
+async function api(path, opts = {}) {
+  const headers = {"Content-Type": "application/json"};
+  const t = getToken(); if (t) headers.Authorization = "Bearer " + t;
+  const r = await fetch(API + path, {cache: "no-store", ...opts, headers, body: opts.body && JSON.stringify(opts.body)});
+  const data = await r.json().catch(() => ({}));
+  if (r.status === 401) { askToken(); throw new Error("admin token required — set it and retry"); }
+  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data;
+}
+function toast(msg, bad) {
+  const t = $("toast"); t.textContent = msg; t.className = "toast on" + (bad ? " bad" : "");
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.className = "toast", bad ? 5000 : 2600);
+}
+$("tokenBtn").onclick = askToken;
+
+// ── state ───────────────────────────────────────────────────────────────
+async function loadState() {
+  try { S.state = await api("state"); } catch (e) { setPill("failed", "MANAGER OFFLINE"); return; }
+  const st = S.state;
+  // only swap the draft when the stored config really changed (form handlers hold references into it)
+  const fresh = !S.draft || (!isDirty() && JSON.stringify(st.config) !== JSON.stringify(S.saved));
+  if (fresh) { S.saved = clone(st.config); S.draft = clone(st.config); S.renderedFor = null; }
+  $("tokenBtn").hidden = !st.auth_required;
+  $("navChat").href = `${location.protocol}//${location.hostname}:${st.webui_port || 3000}/`;
+  $("verLlama").textContent = st.versions["llama.cpp"] ? "v" + st.versions["llama.cpp"] : "not installed";
+  $("verVllm").textContent = st.versions.vllm ? "v" + st.versions.vllm : "not installed";
+  renderStatus(); renderBackendCards(); renderUpdates(); renderMenu(); renderSmoke();
+  if (S.renderedFor !== S.draft.backend && S.schema && S.models) renderParams();
+}
+function setPill(cls, text) { const p = $("pill"); p.className = "pill " + cls; p.lastElementChild.textContent = text; }
+function renderStatus() {
+  const b = S.state.backend;
+  setPill(b.state, (b.state === "running" ? b.kind + " · LIVE" : b.state === "starting" ? "LOADING " + (b.kind || "")
+    : b.state === "stopped" ? "no model loaded" : b.state).toUpperCase());
+  $("sKind").textContent = b.state === "stopped" ? "none" : b.kind || "--";
+  $("sState").textContent = b.state;
+  $("sState").style.color = {running: "var(--lime)", failed: "var(--red)", starting: "var(--amber)", stopping: "var(--amber)"}[b.state] || "";
+  $("sUp").textContent = b.state === "starting" && b.started_at ? "loading " + dur(Date.now() / 1000 - b.started_at) : dur(b.uptime);
+  $("sPid").textContent = b.pid ?? "--";
+  $("sErr").textContent = b.error || "";
+  const busy = S.state.busy || b.state === "starting" || b.state === "stopping";
+  $("applyBtn").disabled = S.state.busy;
+  $("startBtn").disabled = busy || b.state === "running";
+  $("stopBtn").disabled = !(b.state === "running" || b.state === "starting");
+  $("dirty").classList.toggle("on", isDirty());
+  if (S.draft) renderBoot();
+}
+function renderBackendCards() {
+  document.querySelectorAll(".be").forEach(el => {
+    const be = el.dataset.be, b = S.state.backend;
+    el.classList.toggle("sel", S.draft.backend === be);
+    const live = el.querySelector(".live");
+    live.hidden = !(b.kind === be && (b.state === "running" || b.state === "starting"));
+    live.className = "pill live " + b.state;
+    live.lastElementChild.textContent = b.state === "running" ? "ACTIVE" : "LOADING";
+    el.querySelector(".gear").classList.toggle("on", S.formEdit === be);
+  });
+}
+// ── smoke test: did the parsers really work for the loaded model? ────────
+const SMOKE_MARK = {ok: "✓", fail: "✗", warn: "?", off: "off", na: "–"};
+function renderSmoke() {
+  const s = S.state.smoke, b = S.state.backend, el = $("smoke");
+  if (!s && b.state !== "running") { if (el.innerHTML) el.innerHTML = ""; return; }
+  const row = (name, r) => r ? `<div class="sm-i ${r[0]}" title="${esc(r[1])}"><b>${name}</b><span class="st">${SMOKE_MARK[r[0]] || "?"}</span><span>${esc(r[1])}</span></div>` : "";
+  const busy = s?.running, can = b.state === "running" && !busy;
+  const html = `<div class="sm-h"><span>Smoke test${s?.model ? " · " + esc(s.model) : ""}</span>${busy ? `<span class="tag">running…</span>` : ""}
+      <button class="btn sm ghost" id="smokeBtn" type="button"${can ? "" : " disabled"} title="Send a tool-call request and a reasoning request to the running model">Run</button></div>`
+    + (busy ? "" : !s ? `<div class="sm-note">not run for this load</div>`
+      : s.error ? `<div class="sm-i fail"><b>error</b><span class="st">✗</span><span>${esc(s.error)}</span></div>`
+      : row("tools", s.tools) + row("reasoning", s.reasoning));
+  if (el.dataset.html === html) return;
+  el.dataset.html = html; el.innerHTML = html;
+  $("smokeBtn").onclick = () => act(() => api("smoke", {method: "POST"}), "smoke test started");
+}
+
+// ── gear menu: form editor + update check ───────────────────────────────
+function toggleFormEdit(be) {
+  if (S.draft.backend !== be) { S.draft.backend = be; S.formEdit = be; changed(); }
+  else S.formEdit = S.formEdit === be ? null : be;
+  S.feSel = null; renderParams();
+  if (S.formEdit) $("formEd").scrollIntoView({block: "nearest", behavior: "smooth"});
+}
+function closeMenu(refocus) {
+  const m = $("gmenu");
+  if (m.hidden) return;
+  m.hidden = true;
+  const g = document.querySelector(`.be .gear[data-gear="${CSS.escape(S.menuFor || "")}"]`);
+  if (g) { g.setAttribute("aria-expanded", "false"); if (refocus) g.focus(); }
+  S.menuFor = null;
+}
+function renderMenu() {
+  const be = S.menuFor;
+  if (!be) return;
+  $("gmTitle").textContent = (be === "vllm" ? "vLLM" : "llama.cpp") + " options";
+  const editing = S.formEdit === be;
+  $("gmEdit").setAttribute("aria-checked", String(editing));
+  $("gmEdit").lastElementChild.hidden = !editing;
+  $("gmEdit").children[1].textContent = editing ? "Close form editor" : "Edit form";
+  const x = S.state?.updates?.[be], ago = S.state?.updates?.checked_at ? dur(Date.now() / 1000 - S.state.updates.checked_at) + " ago" : null;
+  $("gmUpd").innerHTML = !x ? "not checked yet"
+    : x.error ? `last check failed · ${esc(ago)}`
+    : x.available ? `<span class="up">⬆ ${esc(x.latest)} available</span> · set ${be === "vllm" ? "VLLM_VERSION" : "LLAMA_CPP_REF"}=${esc(x.latest)} in .env and rebuild`
+    : `✓ ${esc(x.latest)} is the latest · checked ${esc(ago)}`;
+}
+function openMenu(g) {
+  const be = g.dataset.gear, m = $("gmenu");
+  if (S.menuFor === be && !m.hidden) { closeMenu(true); return; }
+  closeMenu();
+  S.menuFor = be; syncPrefs(); renderMenu();
+  m.hidden = false;
+  g.setAttribute("aria-expanded", "true");
+  const r = g.getBoundingClientRect(), w = m.offsetWidth;
+  m.style.top = (r.bottom + scrollY + 6) + "px";
+  m.style.left = Math.max(8, Math.min(r.right + scrollX - w, scrollX + document.documentElement.clientWidth - w - 8)) + "px";
+  $("gmEdit").focus();
+}
+document.querySelectorAll(".be .gear").forEach(g => {
+  g.setAttribute("aria-haspopup", "menu"); g.setAttribute("aria-expanded", "false");
+  g.onclick = e => { e.stopPropagation(); e.preventDefault(); openMenu(g); };
+  g.onkeydown = e => { if (e.key === "Enter" || e.key === " " || e.key === "ArrowDown") { e.preventDefault(); e.stopPropagation(); openMenu(g); } };
+});
+$("gmEdit").onclick = () => { const be = S.menuFor; closeMenu(); toggleFormEdit(be); };
+$("gmenu").addEventListener("keydown", e => {
+  const items = [...$("gmenu").querySelectorAll(".gm-i")].map(i => i.tagName === "LABEL" ? i.querySelector("input") : i);
+  const k = items.indexOf(document.activeElement);
+  if (e.key === "Escape") { e.preventDefault(); closeMenu(true); }
+  else if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); items[(k + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length].focus(); }
+  else if (e.key === "Tab") closeMenu();
+});
+document.addEventListener("click", e => { if (!$("gmenu").hidden && !$("gmenu").contains(e.target)) closeMenu(); });
+addEventListener("resize", () => closeMenu());
+// ── update check: badge under each backend's version ─────────────────────
+function renderUpdates() {
+  const u = S.state.updates || {}, ago = u.checked_at ? dur(Date.now() / 1000 - u.checked_at) + " ago" : "";
+  [["llama.cpp", "updLlama"], ["vllm", "updVllm"]].forEach(([be, id]) => {
+    const x = u[be], el = $(id);
+    el.hidden = !x;
+    if (!x) return;
+    if (x.error) { el.textContent = `update check failed · ${ago}`; el.title = x.error; return; }
+    el.title = (x.available ? `Newer: ${x.latest}${x.published ? " (" + x.published.slice(0, 10) + ")" : ""}\nInstalled: ${x.installed || "?"}\n\nTo upgrade: ${x.how}\n`
+      : `Latest release: ${x.latest}\n`) + `Checked ${ago}${x.url ? "\n" + x.url : ""}`;
+    el.innerHTML = x.available ? `<span class="chip">⬆ update ${esc(x.latest)}${x.behind ? ` · ${x.behind} commits newer` : ""}</span>`
+      : x.available === false ? `✓ latest (${esc(x.latest)}) · checked ${esc(ago)}` : `latest release ${esc(x.latest)} · checked ${esc(ago)}`;
+  });
+}
+$("updBtn").onclick = () => {
+  $("updBtn").disabled = true; $("updBtn").children[1].textContent = "Checking…";
+  act(async () => { await api("updates/check", {method: "POST"}); }, "checked for updates").finally(() => {
+    $("updBtn").disabled = false; $("updBtn").children[1].textContent = "Check for updates now";
+  });
+};
+document.querySelectorAll(".be").forEach(el => el.onclick = () => {
+  if (S.draft.backend === el.dataset.be) return;
+  S.draft.backend = el.dataset.be; renderBackendCards(); renderParams(); changed();
+});
+const isDirty = () => S.saved && JSON.stringify(S.saved) !== JSON.stringify(S.draft);
+
+// ── parameter form ──────────────────────────────────────────────────────
+function cfgOf(be) { S.draft[be] = S.draft[be] || {values: {}, extra: []}; S.draft[be].values = S.draft[be].values || {}; S.draft[be].extra = S.draft[be].extra || []; return S.draft[be]; }
+function renderParams() {
+  const be = S.draft.backend, schema = S.schema[be], vals = cfgOf(be).values;
+  if (S.formEdit && S.formEdit !== be) S.formEdit = null;
+  const edit = S.formEdit === be;
+  S.renderedFor = be;
+  $("paramTitle").textContent = (be === "vllm" ? "vLLM" : "llama.cpp") + " parameters";
+  const groups = {};
+  schema.forEach(f => (groups[f.group] = groups[f.group] || []).push(f));
+  // one card (or none detected): no Multi-GPU section, unless a value in it is still set and needs clearing
+  if (!edit && (S.gpus?.length || 0) <= 1 && !(groups["Multi-GPU"] || []).some(f => vals[f.flag] != null && vals[f.flag] !== "")) {
+    delete groups["Multi-GPU"];
+  }
+  $("groups").classList.toggle("editing", edit);
+  $("groups").innerHTML = Object.entries(groups).map(([g, fs], gi, all) =>
+    `<div class="group"><h3>${esc(g)}${edit ? `<span class="fe-gt"><button type="button" class="fe-b" data-sec-mv="-1" data-sec="${esc(g)}" title="Move section up"${gi ? "" : " disabled"}>↑</button><button type="button" class="fe-b" data-sec-mv="1" data-sec="${esc(g)}" title="Move section down"${gi < all.length - 1 ? "" : " disabled"}>↓</button></span>` : ""}</h3><div class="fields">${fs.map(f => fieldHTML(f, edit)).join("")}</div></div>`).join("");
+  if (edit) bindFormTools();
+  renderFormEd(); renderBackendCards();
+  $("groups").querySelectorAll("[data-flag]").forEach(bindField);
+  $("groups").querySelectorAll("[data-tpl-edit]").forEach(b => b.onclick = () => openTemplate(b.dataset.tplEdit, "edit"));
+  $("groups").querySelectorAll("[data-tpl-new]").forEach(b => b.onclick = () => openTemplate(b.dataset.tplNew, "new"));
+  syncPrefs(); renderTune();
+  renderExtra(); refreshSetMarks(); preview();
+  if (!$("cat").hidden) loadCatalog();
+  applyTips(); fetchCatalog(S.draft.backend).then(applyTips, () => {});
+}
+// ── hover details: the schema's note + the backend's own --help entry for that flag ──
+function fetchCatalog(be) {
+  if (S.catalog[be]) return Promise.resolve(S.catalog[be]);
+  S.catalogP = S.catalogP || {};
+  return S.catalogP[be] ||= api("catalog?backend=" + encodeURIComponent(be))
+    .then(c => (S.catalog[be] = c), e => { delete S.catalogP[be]; throw e; });
+}
+function catEntry(be, flag) {
+  const all = S.catalog[be]; if (!all || !flag) return null;
+  const pos = flag.replace(/^--no-/, "--");
+  return all.find(c => c.flag === flag || c.aliases.includes(flag)) || all.find(c => c.flag === pos || c.aliases.includes(pos)) || null;
+}
+const FIELD_NOTES = {
+  _gpus: "Sets CUDA_VISIBLE_DEVICES for the backend process (PCI bus order, same numbering as nvidia-smi). Unticked GPUs are invisible to it; leave all ticked to use every card.",
+  // vLLM prints no help text for these three
+  "--enable-auto-tool-choice": "Lets the model decide on its own when to call tools (tool_choice=\"auto\" in OpenAI requests). Needs --tool-call-parser set to the parser for this model family.",
+  "--tool-call-parser": "Turns the model's raw tool-call output into OpenAI tool_calls. Must match the model family — e.g. hermes (Qwen2.5 / Qwen3), qwen3_coder or qwen3_xml (Qwen3-Coder / Qwen3.5+), llama3_json, mistral, deepseek_v3, openai (gpt-oss). Required by --enable-auto-tool-choice.",
+  "--chat-template": "Jinja chat template that replaces the model's own (tokenizer_config.json / chat_template.jinja). Templates picked here are saved under state/templates and passed by path.",
+  model: "Positional model argument to `vllm serve`: a Hugging Face repo id (owner/name) or a local folder. Repo ids are resolved from / downloaded into the shared /models hub cache.",
+};
+function fieldTip(f, be) {
+  const c = catEntry(be, f.flag), out = [];
+  const flagTxt = f.flag.startsWith("-") ? f.flag : f.type === "gpus" ? "CUDA_VISIBLE_DEVICES" : "positional";
+  const meta = c?.metavar ? (c.choices && c.metavar.length > 40 ? "{…}" : c.metavar) : "";
+  out.push(`${f.label}  —  ${flagTxt}${meta ? " " + meta : ""}`);
+  if (c?.aliases?.length) out.push("aliases: " + c.aliases.join(", "));
+  if (f.help) out.push("", f.help);
+  if (FIELD_NOTES[f.flag]) out.push("", FIELD_NOTES[f.flag]);
+  if (c?.help && c.help !== f.help) out.push("", `${be} --help:`, c.help.replace(/\s+(\(env: )/, "\n$1").replace(/\s+(\(default: )/, "\n$1"));
+  else if (!c && f.flag.startsWith("-") && !S.catalog[be]) out.push("", `(reading ${be} --help for the full description…)`);
+  if (c?.choices?.length && f.type !== "select") out.push("", "choices: " + c.choices.join(" | "));
+  if (f.type === "bool") out.push("", `DEFAULT: flag omitted, backend decides · ON: ${f.flag} · OFF: ${f.neg || "flag omitted"}`);
+  else if (f.flag.startsWith("-")) out.push("", "Empty / default: flag omitted, the backend's own default applies.");
+  if (c?.group) out.push(`group: ${c.group}`);
+  return out.join("\n");
+}
+function applyTips() {
+  const be = S.draft?.backend, fields = new Map((S.schema?.[be] || []).map(f => [f.flag, f]));
+  document.querySelectorAll("#groups [data-field]").forEach(el => {
+    const f = fields.get(el.dataset.field); if (!f) return;
+    const tip = fieldTip(f, be);
+    el.querySelector("label").title = tip;
+    el.querySelectorAll("input:not([type=checkbox]),select:not(.fe-sec),textarea").forEach(i => i.title = tip);
+  });
+  document.querySelectorAll("#xrows .xf").forEach(i => {
+    const c = catEntry(be, i.value.trim());
+    i.title = c ? [`${c.flag}${c.metavar ? " " + c.metavar : ""}`, c.aliases.length ? "aliases: " + c.aliases.join(", ") : "", "", c.help, c.choices ? "\nchoices: " + c.choices.join(" | ") : "", c.group ? "group: " + c.group : ""].filter((x, k) => x || k === 2).join("\n") : "";
+  });
+}
+function fieldHTML(f, edit) {
+  const v = cfgOf(S.draft.backend).values[f.flag], id = "f_" + f.flag.replace(/\W/g, "_");
+  const flagTxt = f.flag.startsWith("-") ? f.flag : f.type === "gpus" ? "CUDA_VISIBLE_DEVICES" : "positional";
+  let input;
+  let filtNote = "";
+  if (f.type === "gguf") {
+    const list = (S.models?.gguf || []);
+    const role = f.flag === "--mmproj" ? "mmproj" : f.flag === "--spec-draft-model" ? "draft" : "model";
+    const shown = smartFilter() ? list.filter(m => fitsSlot(m, role)) : list;
+    const sorted = [...shown].sort((a, b) => (b.role === role) - (a.role === role) || a.path.localeCompare(b.path));
+    const known = list.find(m => m.path === v), hidden = v && known && !shown.includes(known);
+    const label = m => `${m.path} · ${gb(m.size)}${m.meta?.quant ? " · " + m.meta.quant : ""}${!smartFilter() && m.role !== role ? " · " + m.role : ""}`;
+    input = `<select id="${id}" data-flag="${esc(f.flag)}"><option value="">— none —</option>${!v || known ? "" : `<option value="${esc(v)}" selected>${esc(v)} (missing)</option>`}${hidden ? `<option value="${esc(v)}" selected>${esc(label(known))} (filtered)</option>` : ""}${sorted.map(m => `<option value="${esc(m.path)}"${m.path === v ? " selected" : ""}>${esc(label(m))}</option>`).join("")}</select>`;
+    if (smartFilter() && shown.length < list.length) filtNote = `<small class="filt">${shown.length} of ${list.length} GGUFs shown — ${role === "model" ? "target models only" : role === "draft" ? "drafts that pair with the target" : "projectors that pair with the target"}</small>`;
+  } else if (f.type === "hfmodel") {
+    // a real <select> like the GGUF pickers; "Other" reveals a box for a repo that isn't downloaded yet
+    const hf = (S.models?.hf || []).filter(m => !smartFilter() || m.complete);
+    const custom = !!(S.hfCustom || (v && !hf.some(m => m.value === v)));
+    input = `<div class="hfrow" data-flag="${esc(f.flag)}" data-kind="hfmodel">
+      <select id="${id}"><option value="">— none —</option>${hf.map(m => `<option value="${esc(m.value)}"${m.value === v ? " selected" : ""}>${esc(m.repo)} · ${gb(m.size)}${m.meta?.quant ? " · " + esc(m.meta.quant) : ""}${m.meta?.vision ? " · vision" : ""}${m.kind === "folder" ? " · folder" : ""}</option>`).join("")}
+        <option value="__custom__"${custom ? " selected" : ""}>Other — type a Hugging Face repo id…</option></select>
+      <input type="text" class="hfcustom" value="${esc(custom ? v ?? "" : "")}" placeholder="owner/repo — vLLM downloads it into models/ on start" spellcheck="false" aria-label="Hugging Face repo id"${custom ? "" : " hidden"}></div>`;
+  } else if (f.type === "select") {
+    input = `<select id="${id}" data-flag="${esc(f.flag)}">${f.options.map(o => `<option value="${esc(o)}"${(v ?? "") === o ? " selected" : ""}>${o === "" ? "default" : esc(o)}</option>`).join("")}${v && !f.options.includes(v) ? `<option selected>${esc(v)}</option>` : ""}</select>`;
+  } else if (f.type === "bool") {
+    const st = v === true ? "y" : v === false ? "n" : "d";
+    input = `<div class="seg" data-flag="${esc(f.flag)}" data-kind="bool">
+      <button type="button" data-v="d" class="${st === "d" ? "on" : ""}">DEFAULT</button>
+      <button type="button" data-v="y" class="${st === "y" ? "on y" : ""}">ON</button>
+      <button type="button" data-v="n" class="${st === "n" ? "on n" : ""}"${f.neg ? "" : ` title="omits the flag"`}>OFF</button></div>`;
+  } else if (f.type === "template") {
+    const names = (S.templates || []).map(t => t.name);
+    input = `<div class="tplrow"><select id="${id}" data-flag="${esc(f.flag)}"><option value="">model's built-in template</option>${v && !names.includes(v) ? `<option value="${esc(v)}" selected>${esc(v)} (missing)</option>` : ""}${names.map(n => `<option value="${esc(n)}"${n === v ? " selected" : ""}>${esc(n)}</option>`).join("")}</select>
+      ${v ? `<button class="btn sm" type="button" data-tpl-edit="${esc(f.flag)}" title="Edit the selected template">Edit</button>` : ""}
+      <button class="btn sm${v ? " ghost" : ""}" type="button" data-tpl-new="${esc(f.flag)}" title="New template, starting from the model's own">${v ? "New" : "Customize"}</button></div>`;
+  } else if (f.type === "gpus") {
+    const sel = new Set(v || []);
+    input = S.gpus?.length
+      ? `<div class="gpupick" data-flag="${esc(f.flag)}" data-kind="gpus">${S.gpus.map(g => `<label><input type="checkbox" value="${g.index}"${sel.has(g.index) ? " checked" : ""}>GPU ${g.index} · ${esc(shortGpu(g.name))} · ${(g.vram_total / 1024).toFixed(0)} GB</label>`).join("")}</div>`
+      : `<div class="gpupick"><span class="empty" style="padding:4px 0">no GPUs reported by nvidia-smi</span></div>`;
+  } else if (f.type === "json") {
+    input = `<textarea id="${id}" data-flag="${esc(f.flag)}" rows="2" placeholder="${esc(f.placeholder || "")}" spellcheck="false">${esc(v ?? "")}</textarea>`;
+  } else {
+    const num = f.type === "int" || f.type === "float";
+    input = `<input id="${id}" data-flag="${esc(f.flag)}" ${num ? `type="number" step="${f.type === "int" ? 1 : "any"}"` : 'type="text" spellcheck="false"'} value="${esc(v ?? "")}" placeholder="${esc(f.placeholder || "default")}">`;
+  }
+  const wide = f.type === "json" || f.type === "hfmodel" || f.type === "gguf" || f.type === "gpus" || f.type === "template";
+  return `<div class="f${wide ? " wide" : ""}" data-field="${esc(f.flag)}"><label for="${id}"><span>${esc(f.label)}</span><code>${esc(flagTxt)}</code></label>${input}${filtNote || (f.help ? `<small>${esc(f.help)}</small>` : "")}${edit ? feTools(f) : ""}</div>`;
+}
+
+// ── form editor (gear on a backend card) ────────────────────────────────
+// The layout is saved server-side (PUT /api/forms) and /api/schema returns the edited form, so the
+// rest of the page needs no special cases. Taking a field off clears its value on screen.
+const RESERVED = new Set(["--host", "--port", "--api-prefix", "--path", "--uds"]);
+const feOrder = () => S.schema[S.draft.backend].map(f => ({flag: f.flag, group: f.group}));
+function feTools(f) {
+  const be = S.draft.backend, list = S.schema[be], groups = [...new Set(list.map(x => x.group))];
+  const same = list.filter(x => x.group === f.group).map(x => x.flag), k = same.indexOf(f.flag);
+  const locked = f.flag === MODEL_FLAG[be];
+  return `<div class="fe-tools" data-fe="${esc(f.flag)}">
+    <button type="button" class="fe-b" data-fe-mv="-1" title="Move up"${k > 0 ? "" : " disabled"}>↑</button>
+    <button type="button" class="fe-b" data-fe-mv="1" title="Move down"${k < same.length - 1 ? "" : " disabled"}>↓</button>
+    <select class="fe-sec" title="Move to another section" aria-label="Section">${groups.map(g => `<option${g === f.group ? " selected" : ""}>${esc(g)}</option>`).join("")}<option value="__new__">New section…</option></select>
+    <button type="button" class="fe-b rm" data-fe-rm${locked ? ` disabled title="The model field stays on the form"` : ` title="Take off the form"`}>✕</button></div>`;
+}
+async function saveForm(order, defs, msg) {
+  const be = S.draft.backend;
+  try {
+    const form = await api("forms", {method: "PUT", body: {backend: be, form: {order, custom: defs || {}}}});
+    for (const c of [S.saved, S.draft]) c.forms = {...(c.forms || {}), [be]: form};
+    S.schema = await api("schema");
+    renderParams();
+    if (msg) toast(msg);
+  } catch (e) { toast(e.message, true); }
+}
+function bindFormTools() {
+  $("groups").querySelectorAll(".fe-tools").forEach(t => {
+    const flag = t.dataset.fe;
+    t.querySelectorAll("[data-fe-mv]").forEach(b => b.onclick = () => feMove(flag, +b.dataset.feMv));
+    t.querySelector(".fe-sec").onchange = e => {
+      let g = e.target.value;
+      if (g === "__new__") g = (prompt("New section name:") || "").trim().slice(0, 40);
+      if (!g) { e.target.value = S.schema[S.draft.backend].find(f => f.flag === flag).group; return; }
+      feSection(flag, g);
+    };
+    t.querySelector("[data-fe-rm]").onclick = () => feRemove(flag);
+  });
+  $("groups").querySelectorAll("[data-sec-mv]").forEach(b => b.onclick = () => feSecMove(b.dataset.sec, +b.dataset.secMv));
+}
+function feMove(flag, dir) {
+  const o = feOrder(), i = o.findIndex(x => x.flag === flag);
+  let j = i + dir;
+  while (j >= 0 && j < o.length && o[j].group !== o[i].group) j += dir;
+  if (j < 0 || j >= o.length) return;
+  [o[i], o[j]] = [o[j], o[i]];
+  saveForm(o);
+}
+function feSection(flag, group) {
+  const o = feOrder(), [e] = o.splice(o.findIndex(x => x.flag === flag), 1);
+  e.group = group;
+  const last = o.map(x => x.group).lastIndexOf(group);
+  o.splice(last < 0 ? o.length : last + 1, 0, e);
+  saveForm(o, null, `moved to ${group}`);
+}
+function feSecMove(group, dir) {
+  const o = feOrder(), names = [...new Set(o.map(x => x.group))], k = names.indexOf(group), k2 = k + dir;
+  if (k2 < 0 || k2 >= names.length) return;
+  [names[k], names[k2]] = [names[k2], names[k]];
+  saveForm(names.flatMap(n => o.filter(x => x.group === n)));
+}
+function feRemove(flag) {
+  const be = S.draft.backend, vals = cfgOf(be).values, v = vals[flag], f = S.schema[be].find(x => x.flag === flag);
+  const set = v != null && v !== "";
+  if (set && !confirm(`Take “${f.label}” (${flag}) off the form? Its value (${JSON.stringify(v)}) is cleared from the settings on screen — Save or Apply to make that stick.`)) return;
+  if (set) {  // a value only typed on screen just goes; a saved one is cleared (Save/Apply to make it stick)
+    if (S.saved?.[be]?.values?.[flag] === undefined) delete vals[flag]; else vals[flag] = null;
+    changed();
+  }
+  saveForm(feOrder().filter(x => x.flag !== flag), null, `${flag} taken off the form — the search above adds it back`);
+}
+function feGuess(c) {
+  const neg = c.aliases.find(a => a.startsWith("--no-")) || null;
+  const def = (c.help.match(/\(default:\s*([^)]*)\)/) || [])[1]?.trim();
+  if (c.choices?.length) return {type: "select", neg};
+  if (!c.metavar) return {type: "bool", neg};
+  if (/json/i.test(c.metavar) || /\bjson\b/i.test(c.help.slice(0, 100))) return {type: "json", neg};
+  if (/^(N|INT|NUM)$/i.test(c.metavar) || (def && /^-?\d+$/.test(def))) return {type: "int", neg};
+  if (/^(F|FLOAT|P)$/i.test(c.metavar) || (def && /^-?\d*\.\d+$/.test(def))) return {type: "float", neg};
+  return {type: "text", neg};
+}
+function renderFormEd() {
+  const el = $("formEd"), be = S.draft.backend;
+  if (S.formEdit !== be) { el.innerHTML = ""; return; }
+  el.innerHTML = `<div class="fe">
+    <div class="fe-h"><b>Form editor · ${be === "vllm" ? "vLLM" : "llama.cpp"}</b>
+      <span class="bact"><button class="btn sm ghost" type="button" id="feReset">Reset to default form</button><button class="btn sm" type="button" id="feDone">Done</button></span></div>
+    <p class="fe-p">Search any flag from <code>${be === "vllm" ? "vllm serve --help=all" : "llama-server --help"}</code>, pick it, choose a section and position, then <b>Add to form</b>. On the fields below: ↑ ↓ reorder, the menu moves a field to another section, ✕ takes it off the form. Changes save as you make them.</p>
+    <input type="text" id="feQ" placeholder="search flags — e.g. rope, lora, timeout, cache…" spellcheck="false" autocomplete="off" aria-label="Search flags" value="${esc(S.feQ || "")}">
+    <div class="fe-res" id="feRes"></div>
+    <div id="feAdd"></div></div>`;
+  $("feDone").onclick = () => { S.formEdit = null; renderParams(); };
+  $("feReset").onclick = async () => {
+    if (!confirm(`Put the default ${be} form back? Fields you added come off the form (values already saved keep being passed until you clear them).`)) return;
+    try {
+      await api("forms?backend=" + encodeURIComponent(be), {method: "DELETE"});
+      S.schema = await api("schema"); renderParams(); toast("default form restored");
+    } catch (e) { toast(e.message, true); }
+  };
+  $("feQ").oninput = () => { S.feQ = $("feQ").value; renderFeRes(); };
+  renderFeRes(); renderFeAdd();
+  fetchCatalog(be).then(() => { if (S.formEdit === be) { renderFeRes(); renderFeAdd(); } },
+    e => { if ($("feRes")) $("feRes").innerHTML = `<div class="empty err" style="padding:10px">${esc(e.message)}</div>`; });
+}
+function renderFeRes() {
+  const be = S.draft.backend, all = S.catalog[be], box = $("feRes");
+  if (!box) return;
+  if (!all) { box.innerHTML = `<div class="empty" style="padding:10px 12px">reading ${esc(be)} --help${be === "vllm" ? " (~20 s the first time)" : ""}…</div>`; return; }
+  const q = (S.feQ || "").trim().toLowerCase(), inForm = new Set(S.schema[be].map(f => f.flag));
+  const list = all.filter(c => !RESERVED.has(c.flag) && (!q || (c.flag + " " + c.aliases.join(" ") + " " + c.help + " " + c.group).toLowerCase().includes(q)));
+  box.innerHTML = list.slice(0, 60).map(c => {
+    const on = inForm.has(c.flag) || c.aliases.some(a => inForm.has(a));
+    const meta = c.metavar ? (c.metavar.length > 40 ? "{…}" : c.metavar) : "";
+    return `<button type="button" class="fe-r${S.feSel === c.flag ? " sel" : ""}" data-fe-pick="${esc(c.flag)}"${on ? " disabled" : ""}><b>${esc(c.flag)}${meta ? ` <span>${esc(meta)}</span>` : ""}</b>${on ? `<span class="chip">on form</span>` : ""}<p>${esc(c.help.slice(0, 170))}${c.help.length > 170 ? "…" : ""}</p></button>`;
+  }).join("") + (list.length > 60 ? `<div class="empty" style="padding:8px 12px">${list.length - 60} more — narrow the search</div>` : "")
+    || `<div class="empty" style="padding:10px 12px">no flag matches “${esc(q)}”</div>`;
+  box.querySelectorAll("[data-fe-pick]").forEach(b => b.onclick = () => {
+    S.feSel = b.dataset.fePick; renderFeRes(); renderFeAdd();
+    $("feAdd").scrollIntoView({block: "nearest", behavior: "smooth"});
+  });
+}
+function renderFeAdd() {
+  const box = $("feAdd"), be = S.draft.backend;
+  if (!box) return;
+  const c = S.feSel && catEntry(be, S.feSel);
+  if (!c) { box.innerHTML = ""; return; }
+  const g = feGuess(c), list = S.schema[be], groups = [...new Set(list.map(f => f.group))];
+  const sec = groups.includes(S.feSec) ? S.feSec : groups[groups.length - 1];
+  const label = c.flag.replace(/^-+/, "").replace(/-/g, " ").replace(/^./, s => s.toUpperCase());
+  box.innerHTML = `<div class="fe-add">
+    <div class="fe-add-h"><code>${esc(c.flag)}${c.metavar && c.metavar.length <= 40 ? " " + esc(c.metavar) : ""}</code><span>${esc(c.group || "")}</span></div>
+    <div class="fe-grid">
+      <label>Label<input type="text" id="feLabel" value="${esc(label)}" maxlength="60"></label>
+      <label>Input<select id="feType">${["text", "int", "float", "bool", "select", "json"].map(x => `<option${x === g.type ? " selected" : ""}>${x}</option>`).join("")}</select></label>
+      <label>Section<select id="feSec">${groups.map(x => `<option${x === sec ? " selected" : ""}>${esc(x)}</option>`).join("")}<option value="__new__">New section…</option></select></label>
+      <label hidden>New section name<input type="text" id="feSecNew" maxlength="40" placeholder="e.g. Custom"></label>
+      <label>Position<select id="fePos"></select></label>
+    </div>
+    <div class="fe-add-a"><button class="btn sm primary" type="button" id="feAddBtn">Add to form</button><button class="btn sm ghost" type="button" id="feCancel">Cancel</button></div></div>`;
+  const fillPos = () => {
+    const s = $("feSec").value, fs = list.filter(f => f.group === s);
+    $("fePos").innerHTML = `<option value="end">at the end</option><option value="start">at the top</option>`
+      + fs.map(f => `<option value="after:${esc(f.flag)}">after ${esc(f.label)}</option>`).join("");
+    $("feSecNew").parentElement.hidden = s !== "__new__";
+    $("fePos").disabled = s === "__new__";
+  };
+  $("feSec").onchange = fillPos; fillPos();
+  $("feCancel").onclick = () => { S.feSel = null; renderFeRes(); renderFeAdd(); };
+  $("feAddBtn").onclick = () => {
+    const pick = $("feSec").value, group = (pick === "__new__" ? $("feSecNew").value : pick).trim();
+    if (!group) { toast("name the new section", true); return; }
+    const type = $("feType").value;
+    if (type === "select" && !c.choices?.length) { toast(`${c.flag} lists no choices in --help — use text`, true); return; }
+    const def = {label: $("feLabel").value.trim() || c.flag, type, help: "",
+                 options: type === "select" ? ["", ...c.choices] : null, neg: type === "bool" ? g.neg : null};
+    const o = feOrder(), pos = $("fePos").value, groupsNow = o.map(x => x.group);
+    let at = groupsNow.lastIndexOf(group) + 1;
+    if (!groupsNow.includes(group)) at = o.length;
+    else if (pos === "start") at = groupsNow.indexOf(group);
+    else if (pos.startsWith("after:")) at = o.findIndex(x => x.flag === pos.slice(6)) + 1;
+    o.splice(at, 0, {flag: c.flag, group});
+    // the same flag set under Additional flags moves into the new field
+    const extra = cfgOf(be).extra, xi = extra.findIndex(x => x.flag === c.flag || c.aliases.includes(x.flag));
+    if (xi >= 0) {
+      const [x] = extra.splice(xi, 1), raw = (x.value ?? "").toString().trim();
+      cfgOf(be).values[c.flag] = type === "bool" ? true : type === "int" ? parseInt(raw, 10) || null : type === "float" ? parseFloat(raw) || null : raw || null;
+      changed();
+    }
+    S.feSec = group; S.feSel = null;
+    saveForm(o, {[c.flag]: def}, `${c.flag} added to ${group}${xi >= 0 ? " (value moved from Additional flags)" : ""}`);
+  };
+}
+
+// ── smart filter: roles + pairing come from GGUF metadata (see manager.gguf_info / compatible) ──
+const smartFilter = () => (S.saved?.ui?.smart_filter ?? true);
+const autoTune = () => (S.saved?.ui?.auto_tune ?? true);
+function compat(t, o) {
+  if (!t || !o || t.error || o.error) return null;
+  if (t.base_repo && o.base_repo) return t.base_repo.toLowerCase() === o.base_repo.toLowerCase();
+  if (t.basename && o.basename && t.basename.toLowerCase() === o.basename.toLowerCase()) return true;
+  const w = o.projection_dim || o.embd;
+  return w && t.embd ? w === t.embd : null;
+}
+function fitsSlot(m, role) {
+  if (m.role !== role) return false;
+  if (role === "model") return true;
+  const target = (S.models?.gguf || []).find(x => x.path === cfgOf("llama.cpp").values["--model"]);
+  return !target || compat(target.meta, m.meta) !== false;  // unknown pairing stays visible
+}
+async function setPref(key, on) {
+  try {
+    const ui = await api("ui", {method: "PUT", body: {[key]: on}});
+    S.saved.ui = {...ui}; S.draft.ui = {...ui};
+    renderParams();
+  } catch (e) { toast(e.message, true); syncPrefs(); }
+}
+function syncPrefs() { $("prefFilter").checked = smartFilter(); $("prefTune").checked = autoTune(); $("prefUpd").checked = S.saved?.ui?.update_check ?? true; $("prefSmoke").checked = S.saved?.ui?.smoke_test ?? true; }
+$("prefUpd").onchange = e => setPref("update_check", e.target.checked);
+$("prefSmoke").onchange = e => setPref("smoke_test", e.target.checked);
+$("prefFilter").onchange = e => setPref("smart_filter", e.target.checked);
+$("prefTune").onchange = e => setPref("auto_tune", e.target.checked);
+
+// ── auto-tune: prefill params from the model's metadata, with undo ─────────
+const MODEL_FLAG = {"llama.cpp": "--model", vllm: "model"};
+async function tune(reason) {
+  const be = S.draft.backend, vals = cfgOf(be).values;
+  if (!vals[MODEL_FLAG[be]]) return;
+  $("tuneBtn").disabled = true; $("tuneBtn").textContent = "Reading model…";
+  try {
+    const r = await api("suggest", {method: "POST", body: {backend: be, values: vals}});
+    const before = clone(vals), beforeExtra = clone(cfgOf(be).extra), changes = [];
+    for (const [k, v] of Object.entries(r.values)) {
+      const old = vals[k] ?? null, nv = v ?? null;
+      // same model, manual re-suggest: keep a served name the user picked
+      if (reason === "manual" && (k === "--alias" || k === "--served-model-name") && old) continue;
+      if (JSON.stringify(old) !== JSON.stringify(nv)) { changes.push([k, old, nv]); vals[k] = nv; }
+    }
+    S.lastTune = {be, before, beforeExtra, changes, notes: r.notes, model: r.model, reason, card: r.card || []};
+    renderParams(); changed(); renderTune();
+  } catch (e) {
+    S.lastTune = {be, error: e.message, reason}; renderTune();
+  }
+  $("tuneBtn").disabled = false; $("tuneBtn").textContent = "Suggest settings";
+}
+function renderTune() {
+  const t = S.lastTune, el = $("tune");
+  if (!t || t.be !== S.draft.backend) { el.innerHTML = ""; return; }
+  const show = v => v === null ? "default" : v === true ? "on" : v === false ? "off" : String(v);
+  el.innerHTML = t.error ? `<div class="tune"><div class="tune-h"><span>Couldn't read the model: ${esc(t.error)}</span><button class="btn sm ghost" id="tuneX">Dismiss</button></div></div>` :
+    `<div class="tune"><div class="tune-h"><span>${t.reason === "auto" ? "Auto-tuned" : "Suggested"} for <b>${esc(t.model)}</b> · ${t.changes.length} change${t.changes.length === 1 ? "" : "s"}</span>
+     <span>${t.changes.length ? `<button class="btn sm" id="tuneUndo">Undo</button> ` : ""}<button class="btn sm ghost" id="tuneX">Dismiss</button></span></div>
+     ${t.changes.length ? `<div class="chg">${t.changes.map(([k, o, n]) => `<span>${esc(k)} ${esc(show(o))} → <b>${esc(show(n))}</b></span>`).join("")}</div>` : ""}
+     <ul>${t.notes.map(n => `<li class="${n.startsWith("⚠") ? "w" : ""}">${esc(n)}</li>`).join("")}</ul>${cardHTML(t)}</div>`;
+  $("tuneX").onclick = () => { S.lastTune = null; renderTune(); };
+  if ($("tuneUndo")) $("tuneUndo").onclick = () => {
+    cfgOf(t.be).values = clone(t.before); cfgOf(t.be).extra = clone(t.beforeExtra || cfgOf(t.be).extra);
+    S.lastTune = null; renderParams(); changed(); renderTune();
+  };
+  if ($("cardApply")) $("cardApply").onclick = () => applyCard(t);
+}
+// ── model-card flags: a tested serve command from the card / repo scripts, ticked flags go into the form ──
+function cardHTML(t) {
+  if (!t.card?.length) return "";
+  const val = v => v === true ? "" : v === false ? " (off)" : v == null ? "" : " " + v;
+  return `<div class="card-s"><div class="card-h"><span>From the model card — tick what to use</span>${t.cardApplied ? `<span class="tag">applied</span>` : `<button class="btn sm" id="cardApply" type="button">Use ticked flags</button>`}</div>
+    ${t.card.map((g, gi) => `<div class="card-g"><div class="card-src">${esc(g.source)}</div>${g.flags.map((f, fi) => `<label class="card-r"><input type="checkbox" data-card="${gi}:${fi}"${f.tick ? " checked" : ""}${f.note && /--help/.test(f.note) || t.cardApplied ? " disabled" : ""}><code>${esc(f.orig)}${esc(val(f.value))}</code><small>${esc(f.note || "")}</small></label>`).join("")}</div>`).join("")}</div>`;
+}
+// "640K" → 655360, "1k" → 1000 (vLLM's human-readable integers)
+function parseHuman(v) {
+  const m = String(v).trim().match(/^(-?\d+(?:\.\d+)?)([kKmMgG])?$/);
+  if (!m) return NaN;
+  const mult = {k: 1e3, K: 1024, m: 1e6, M: 1024 ** 2, g: 1e9, G: 1024 ** 3}[m[2]] || 1;
+  return Math.round(parseFloat(m[1]) * mult);
+}
+function applyCard(t) {
+  const be = t.be, conf = cfgOf(be), fields = S.schema[be] || [], used = [];
+  document.querySelectorAll("#tune [data-card]").forEach(cb => {
+    if (!cb.checked || cb.disabled) return;
+    const [gi, fi] = cb.dataset.card.split(":").map(Number), f = t.card[gi].flags[fi];
+    const field = fields.find(x => x.flag === f.flag);
+    if (field && field.type !== "gguf") {
+      const v = f.value;
+      conf.values[f.flag] = field.type === "bool" ? v !== false
+        : field.type === "int" ? (Number.isNaN(parseHuman(v)) ? v : parseHuman(v))
+        : field.type === "float" ? parseFloat(v) : v;
+    } else {
+      const flag = f.value === false ? f.orig : f.flag, value = typeof f.value === "string" ? f.value : "";
+      const row = conf.extra.find(x => x.flag === flag || x.flag === f.orig);
+      if (row) { row.value = value; row.enabled = true; } else conf.extra.push({flag, value, enabled: true});
+    }
+    used.push(f.orig);
+  });
+  if (!used.length) { toast("nothing ticked", true); return; }
+  t.cardApplied = true;
+  renderParams(); changed(); renderTune();
+  toast(`${used.length} flag${used.length === 1 ? "" : "s"} from the model card: ${used.join(" ")} — Undo reverts them`);
+}
+$("tuneBtn").onclick = () => tune("manual");
+function bindField(el) {
+  const f = S.schema[S.draft.backend].find(x => x.flag === el.dataset.flag);
+  const vals = new Proxy({}, {set: (_, k, v) => { cfgOf(S.draft.backend).values[k] = v; return true; },
+                              get: (_, k) => cfgOf(S.draft.backend).values[k]});
+  if (el.dataset.kind === "hfmodel") {
+    const sel = el.querySelector("select"), txt = el.querySelector(".hfcustom");
+    const commit = v => {
+      const prev = vals[f.flag];
+      vals[f.flag] = v || null;
+      changed();
+      if (v && v !== prev && autoTune()) tune("auto");
+    };
+    sel.onchange = () => {
+      if (sel.value === "__custom__") { S.hfCustom = true; txt.hidden = false; txt.focus(); return; }
+      S.hfCustom = false; txt.hidden = true; commit(sel.value);
+    };
+    txt.onchange = () => commit(txt.value.trim());
+    return;
+  }
+  if (el.dataset.kind === "gpus") {
+    el.querySelectorAll("input").forEach(cb => cb.onchange = () => {
+      const picked = [...el.querySelectorAll("input:checked")].map(x => +x.value);
+      vals[f.flag] = picked.length ? picked : null;  // none ticked = all cards
+      changed();
+    });
+    return;
+  }
+  if (el.dataset.kind === "bool") {
+    el.querySelectorAll("button").forEach(b => b.onclick = () => {
+      const v = b.dataset.v; vals[f.flag] = v === "y" ? true : v === "n" ? false : null;
+      el.querySelectorAll("button").forEach(x => x.className = x === b ? "on " + (v === "d" ? "" : v) : "");
+      changed();
+    });
+    return;
+  }
+  el.addEventListener("input", () => {
+    const raw = el.value.trim();
+    vals[f.flag] = raw === "" ? null : f.type === "int" ? parseInt(raw, 10) : f.type === "float" ? parseFloat(raw) : raw;
+    if (Number.isNaN(vals[f.flag])) vals[f.flag] = null;
+    changed();
+  });
+  // a new model re-tunes (or at least re-filters its draft/projector pickers)
+  if (f.flag === MODEL_FLAG[S.draft.backend]) {
+    el.addEventListener("change", () => {
+      if (!el.value.trim()) return;
+      if (autoTune()) tune("auto");
+      else if (smartFilter() && f.type === "gguf") renderParams();
+    });
+  }
+}
+function refreshSetMarks() {
+  const vals = cfgOf(S.draft.backend).values;
+  document.querySelectorAll("[data-field]").forEach(el => { const v = vals[el.dataset.field]; el.classList.toggle("set", v != null && v !== ""); });
+}
+function changed() { refreshSetMarks(); $("dirty").classList.toggle("on", isDirty()); clearTimeout(changed.t); changed.t = setTimeout(preview, 250); }
+
+// ── extra flags + catalog ───────────────────────────────────────────────
+function renderExtra() {
+  const extra = cfgOf(S.draft.backend).extra;
+  $("xTag").textContent = extra.length;
+  $("xrows").innerHTML = extra.length ? extra.map((x, i) => `<div class="xrow" data-i="${i}">
+    <input type="checkbox" ${x.enabled !== false ? "checked" : ""} title="enabled">
+    <input type="text" class="xf" value="${esc(x.flag)}" placeholder="--flag" spellcheck="false">
+    <input type="text" class="xv" value="${esc(x.value ?? "")}" placeholder="value (blank for switches)" spellcheck="false">
+    <button class="btn sm ghost" title="remove">✕</button></div>`).join("")
+    : `<div class="empty" style="padding:0 0 10px">Anything not in the form above: rope scaling, LoRA, draft tuning, … Browse the full flag list from <code>--help</code>.</div>`;
+  $("xrows").querySelectorAll(".xrow").forEach(row => {
+    const x = extra[+row.dataset.i], [cb, f, v] = row.querySelectorAll("input");
+    cb.onchange = () => { x.enabled = cb.checked; changed(); };
+    f.oninput = () => { x.flag = f.value.trim(); changed(); };
+    v.oninput = () => { x.value = v.value; changed(); };
+    row.querySelector("button").onclick = () => { extra.splice(+row.dataset.i, 1); renderExtra(); changed(); };
+  });
+}
+$("xAdd").onclick = () => { cfgOf(S.draft.backend).extra.push({flag: "", value: "", enabled: true}); renderExtra(); $("xrows").lastElementChild.querySelector(".xf").focus(); };
+$("catBtn").onclick = () => { $("cat").hidden = !$("cat").hidden; if (!$("cat").hidden) { loadCatalog(); $("catQ").focus(); } };
+async function loadCatalog() {
+  const be = S.draft.backend;
+  if (!S.catalog[be]) {
+    $("catList").innerHTML = `<div class="empty" style="padding:14px">reading ${esc(be)} --help${be === "vllm" ? " (vLLM imports torch; ~20 s the first time)" : ""}…</div>`;
+    try { S.catalog[be] = await api("catalog?backend=" + encodeURIComponent(be)); }
+    catch (e) { $("catList").innerHTML = `<div class="empty err" style="padding:14px">${esc(e.message)}</div>`; return; }
+  }
+  renderCatalog();
+}
+function renderCatalog() {
+  const be = S.draft.backend, all = S.catalog[be] || [], q = $("catQ").value.trim().toLowerCase();
+  const inForm = new Set(S.schema[be].map(f => f.flag));
+  const list = all.filter(f => !q || (f.flag + " " + f.aliases.join(" ") + " " + f.help + " " + f.group).toLowerCase().includes(q));
+  $("catN").textContent = `${list.length} / ${all.length}`;
+  $("catList").innerHTML = list.slice(0, 300).map((f, i) => `<div class="cat-item">
+    <div><b>${esc(f.flag)} <span>${esc(f.metavar)}</span></b>${f.aliases.length ? ` <span class="g">${esc(f.aliases.join(" "))}</span>` : ""}<p>${esc(f.help)}</p><span class="g">${esc(f.group)}</span></div>
+    ${inForm.has(f.flag) ? `<span class="tag">in form</span>` : `<button class="btn sm" data-add="${esc(f.flag)}">Add</button>`}</div>`).join("") || `<div class="empty" style="padding:14px">no match</div>`;
+  $("catList").querySelectorAll("[data-add]").forEach(b => b.onclick = () => {
+    const f = all.find(x => x.flag === b.dataset.add);
+    cfgOf(be).extra.push({flag: f.flag, value: f.choices ? f.choices[0] : "", enabled: true});
+    renderExtra(); changed(); toast(`added ${f.flag}${f.metavar ? " — set its value" : ""}`);
+  });
+}
+$("catQ").oninput = () => { clearTimeout(renderCatalog.t); renderCatalog.t = setTimeout(renderCatalog, 120); };
+
+// ── command preview ─────────────────────────────────────────────────────
+const shq = a => /^[\w@%+=:,./-]+$/.test(a) ? a : "'" + a.replace(/'/g, "'\\''") + "'";
+async function preview() {
+  try {
+    const {argv, env, issues} = await api("preview", {method: "POST", body: S.draft});
+    renderIssues(issues);
+    if (issues === null) { clearTimeout(preview.t); preview.t = setTimeout(preview, 3000); }  // --help still loading
+    let html = Object.entries(env || {}).map(([k, v]) => `<span class="fl">${esc(k)}=${esc(shq(v))}</span> `).join("")
+      + `<span class="b">${esc(shq(argv[0]))}</span>`;
+    argv.slice(1).forEach(a => html += a.startsWith("-") ? ` \\\n  <span class="fl">${esc(shq(a))}</span>` : " " + esc(shq(a)));
+    $("cmd").innerHTML = html;
+  } catch (e) { $("cmd").innerHTML = `<span class="err" style="margin:0">${esc(e.message)}</span>`; }
+}
+
+const ISS_LABEL = {removed: "won't start", "bad-value": "invalid value", deprecated: "deprecated"};
+function renderIssues(issues) {
+  document.querySelectorAll("#groups [data-field], #xrows .xrow").forEach(el => {
+    el.classList.remove("iss-removed", "iss-deprecated", "iss-bad-value");
+    el.querySelectorAll("small.iss").forEach(s => s.remove());
+  });
+  const box = $("issues"), be = S.draft.backend;
+  if (!issues?.length) {
+    box.innerHTML = issues === null ? `<div class="iss-note">checking these flags against ${esc(be)} --help…</div>` : "";
+    return;
+  }
+  issues.forEach(i => {
+    const f = (S.schema?.[be] || []).find(x => x.flag === i.flag || x.neg === i.flag);
+    const el = f && i.source === "form" && document.querySelector(`#groups [data-field="${CSS.escape(f.flag)}"]`);
+    if (el) { el.classList.add("iss-" + i.level); el.insertAdjacentHTML("beforeend", `<small class="iss ${i.level}">${esc(ISS_LABEL[i.level])}: see above</small>`); }
+    if (i.source === "extra") document.querySelectorAll("#xrows .xrow").forEach(r => { if (r.querySelector(".xf").value.trim() === i.flag) r.classList.add("iss-" + i.level); });
+  });
+  const blocking = issues.some(i => i.level !== "deprecated");
+  box.innerHTML = `<div class="iss-list${blocking ? "" : " warn"}"><b>${blocking ? `These settings don't match the installed ${esc(be)} — Apply and Start are refused until they're fixed:` : `Deprecated in the installed ${esc(be)} — still works, but plan a replacement:`}</b>
+    ${issues.map(i => `<div class="iss-i"><span class="chip ${i.level}">${ISS_LABEL[i.level]}</span><span>${esc(i.msg)}${i.source === "extra" ? " (additional flags)" : ""}</span></div>`).join("")}</div>`;
+}
+
+// ── actions ─────────────────────────────────────────────────────────────
+async function act(fn, ok) { try { await fn(); if (ok) toast(ok); } catch (e) { toast(e.message, true); } loadState(); }
+$("applyBtn").onclick = () => {
+  const b = S.state.backend, be = S.draft.backend;
+  if ((b.state === "running" || b.state === "starting") && !confirm(`Restart now? ${b.kind} stops (requests in flight fail) and ${be} loads with the new settings.`)) return;
+  act(async () => { await api("apply", {method: "POST", body: S.draft}); S.saved = clone(S.draft); }, `applying — ${be} restarting`);
+};
+$("saveBtn").onclick = () => act(async () => { await api("config", {method: "PUT", body: S.draft}); S.saved = clone(S.draft); }, "saved; takes effect on next start");
+$("startBtn").onclick = () => act(async () => {
+  if (isDirty()) { await api("config", {method: "PUT", body: S.draft}); S.saved = clone(S.draft); }
+  await api("start", {method: "POST"});
+}, "starting");
+$("stopBtn").onclick = () => { if (confirm(`Stop ${S.state.backend.kind}? The API goes down until you start a backend again.`)) act(() => api("stop", {method: "POST"}), "stopping"); };
+$("revertBtn").onclick = () => { S.draft = clone(S.saved); renderBackendCards(); renderParams(); renderStatus(); };
+
+// ── chat templates: /state/templates/*.jinja, --chat-template-file / --chat-template ──
+const TPL = {flag: null, be: null, original: null, loaded: ""};
+async function loadTemplates() { try { S.templates = await api("templates"); } catch { S.templates = S.templates || []; } }
+function setTplMsg(text, cls) { const m = $("tplMsg"); m.textContent = text; m.className = "tpl-msg" + (cls ? " " + cls : ""); }
+function tplNameFor(be) {
+  const base = String(modelOf(be, cfgOf(be))).split("/").pop().replace(/\.gguf$/i, "").replace(/[^\w.-]+/g, "-").toLowerCase().slice(0, 50) || "template";
+  const taken = new Set((S.templates || []).map(t => t.name));
+  let name = base + "-custom", i = 2;
+  while (taken.has(name)) name = `${base}-custom-${i++}`;
+  return name;
+}
+async function openTemplate(flag, mode) {
+  const be = S.draft.backend, cur = cfgOf(be).values[flag];
+  Object.assign(TPL, {flag, be, original: null});
+  $("tplTitle").textContent = `Chat template · ${be === "vllm" ? "vLLM --chat-template" : "llama.cpp --chat-template-file"}`;
+  $("tplPreview").textContent = "";
+  try {
+    if (mode === "edit" && cur) {
+      const t = await api("templates/" + encodeURIComponent(cur));
+      $("tplName").value = TPL.original = t.name;
+      $("tplText").value = t.content;
+    } else {
+      $("tplName").value = tplNameFor(be);
+      $("tplText").value = "";
+    }
+  } catch (e) { toast(e.message, true); return; }
+  $("tplDelete").hidden = !TPL.original;
+  $("tplDlg").showModal();
+  if (!$("tplText").value) await loadModelTemplate(true);
+  TPL.loaded = $("tplText").value;
+  checkTemplate();
+}
+async function loadModelTemplate(silent) {
+  if (!silent && $("tplText").value !== TPL.loaded && !confirm("Replace the editor contents with the model's own template?")) return;
+  setTplMsg("reading the model's template…");
+  try {
+    const t = await api("templates/from-model", {method: "POST", body: {backend: TPL.be, values: cfgOf(TPL.be).values}});
+    $("tplText").value = t.content; TPL.loaded = t.content;
+    setTplMsg(`Loaded from ${t.source}`, "ok");
+    checkTemplate();
+  } catch (e) { setTplMsg(e.message, "warn"); }
+}
+async function checkTemplate() {
+  const content = $("tplText").value;
+  if (!content.trim()) { setTplMsg("empty template"); $("tplPreview").textContent = ""; return; }
+  try {
+    const r = await api("templates/check", {method: "POST", body: {content}});
+    if (r.ok) { setTplMsg("✓ valid — sample conversation rendered:", "ok"); $("tplPreview").textContent = r.preview; }
+    else { setTplMsg(r.syntax_ok ? `⚠ ${r.error}` : `✗ syntax error${r.line ? " on line " + r.line : ""}: ${r.error}`, r.syntax_ok ? "warn" : "bad"); $("tplPreview").textContent = ""; }
+  } catch (e) { setTplMsg(e.message, "bad"); }
+}
+$("tplText").addEventListener("input", () => { clearTimeout(checkTemplate.t); checkTemplate.t = setTimeout(checkTemplate, 500); });
+$("tplText").addEventListener("keydown", e => {  // Tab indents instead of leaving the editor
+  if (e.key !== "Tab") return;
+  e.preventDefault();
+  const t = e.target, s = t.selectionStart;
+  t.setRangeText("  ", s, t.selectionEnd, "end");
+});
+$("tplCheck").onclick = checkTemplate;
+$("tplFromModel").onclick = () => loadModelTemplate(false);
+$("tplSave").onclick = async () => {
+  const name = $("tplName").value.trim();
+  try {
+    const r = await api("templates/" + encodeURIComponent(name), {method: "PUT", body: {content: $("tplText").value}});
+    await loadTemplates();
+    cfgOf(TPL.be).values[TPL.flag] = name;
+    TPL.loaded = $("tplText").value;
+    $("tplDlg").close(); renderParams(); changed();
+    toast(r.ok ? `saved ${name} — selected; apply to use it` : `saved ${name}, but the sample render failed: ${r.error}`, !r.ok);
+  } catch (e) { setTplMsg(e.message, "bad"); }
+};
+$("tplDelete").onclick = async () => {
+  const name = TPL.original;
+  if (!name || !confirm(`Delete template ${name}?`)) return;
+  try {
+    // unselect it in the draft and in the saved settings (without saving other unsaved edits)
+    const vals = cfgOf(TPL.be).values;
+    if (vals[TPL.flag] === name) vals[TPL.flag] = null;
+    const saved = clone(S.saved);
+    if ((saved[TPL.be]?.values || {})[TPL.flag] === name) {
+      saved[TPL.be].values[TPL.flag] = null;
+      await api("config", {method: "PUT", body: saved}); S.saved = saved;
+    }
+    await api("templates/" + encodeURIComponent(name), {method: "DELETE"});
+    await loadTemplates();
+    $("tplDlg").close(); renderParams(); changed(); toast(`deleted ${name}`);
+  } catch (e) { setTplMsg(e.message, "bad"); }
+};
+$("tplClose").onclick = () => {
+  if ($("tplText").value !== TPL.loaded && !confirm("Discard unsaved template changes?")) return;
+  $("tplDlg").close();
+};
+$("tplDlg").addEventListener("cancel", e => {  // Esc
+  if ($("tplText").value !== TPL.loaded && !confirm("Discard unsaved template changes?")) e.preventDefault();
+});
+
+// ── boot default: what starts with the container ────────────────────────
+const modelOf = (be, conf) => (conf?.values || {})[be === "vllm" ? "model" : "--model"] || "no model";
+function renderBoot() {
+  const st = S.state, boot = st.config.boot, envOn = st.boot?.autostart_env, be = S.draft.backend;
+  const cur = `${be === "vllm" ? "vLLM" : "llama.cpp"} · ${modelOf(be, cfgOf(be))}`;
+  let html;
+  if (envOn) {
+    html = `<span>Container start: <b>.env</b> (AUTOSTART=1) picks the backend and model${boot ? " — it overrides the boot default below" : ""}.</span>`;
+  } else if (boot) {
+    html = `<span>Boot default: <b>${esc(boot.backend === "vllm" ? "vLLM" : "llama.cpp")} · ${esc(modelOf(boot.backend, boot.config))}</b> starts with the container.</span>`;
+  } else {
+    html = `<span>No boot default — the container starts with no model loaded.</span>`;
+  }
+  if (st.boot?.skipped) html = `<span class="bwarn">⚠ ${esc(st.boot.skipped)}</span>` + html;
+  html += `<span class="bact">${st.boot?.fails >= 2 ? `<button class="btn sm" id="bootResume" title="Clear the failed-boot count: the boot default starts again on the next container start">Resume autostart</button>` : ""}<button class="btn sm" id="bootSet" title="Save the settings on screen (${esc(cur)}) as what starts with the container">Set current as boot default</button>${boot ? `<button class="btn sm ghost" id="bootClr">Clear</button>` : ""}</span>`;
+  if ($("boot").innerHTML !== html) {
+    $("boot").innerHTML = html;
+    $("bootSet").onclick = () => {
+      if (!confirm(`Start ${cur} with these settings whenever the container starts?`)) return;
+      act(async () => {
+        const b = await api("boot", {method: "PUT", body: {backend: be, config: cfgOf(be)}});
+        S.saved.boot = clone(b); S.draft.boot = clone(b);
+      }, "boot default saved");
+    };
+    if ($("bootResume")) $("bootResume").onclick = () => act(() => api("boot/resume", {method: "POST"}),
+      "autostart resumed — the boot default starts on the next container start");
+    if ($("bootClr")) $("bootClr").onclick = () => act(async () => {
+      await api("boot", {method: "DELETE"}); S.saved.boot = null; S.draft.boot = null;
+    }, "boot default cleared — the container will start with no model");
+  }
+}
+
+// ── Hugging Face token ──────────────────────────────────────────────────
+async function loadToken() {
+  try { renderToken(await api("hf/token")); } catch { renderToken(null); }
+}
+function renderToken(t) {
+  const b = $("tokBtn");
+  S.tok = t;
+  b.className = "tokbtn" + (t?.hint ? (t.error ? " bad" : " ok") : "");
+  b.textContent = !t ? "HF token: ?" : !t.hint ? "HF token: not set" :
+    `HF token: ${t.user ? t.user : t.hint}${t.source === "env" ? " (.env)" : ""}${t.error ? " ⚠" : ""}`;
+  b.title = t?.error || (t?.hint ? `${t.hint} from ${t.source === "env" ? ".env (HF_TOKEN)" : "state/hf_token"} — click to change` : "click to set a Hugging Face token");
+  $("tokDel").hidden = !(t?.source === "saved");
+}
+$("tokBtn").onclick = () => {
+  $("tokForm").hidden = !$("tokForm").hidden;
+  if (!$("tokForm").hidden) {
+    $("tokNote").textContent = S.tok?.source === "env"
+      ? "HF_TOKEN is set in .env and takes precedence; a token saved here is used once that's removed."
+      : "Checked against Hugging Face, then saved to state/hf_token (owner-only). Used for downloads and vLLM model pulls. Create one at huggingface.co/settings/tokens (read access is enough).";
+    $("tokIn").value = ""; $("tokIn").focus();
+  }
+};
+$("tokX").onclick = () => { $("tokForm").hidden = true; $("tokIn").value = ""; };
+$("tokSave").onclick = () => act(async () => {
+  const t = await api("hf/token", {method: "PUT", body: {token: $("tokIn").value}});
+  $("tokIn").value = ""; $("tokForm").hidden = true; renderToken(t);
+}, "Hugging Face token saved");
+$("tokIn").onkeydown = e => { if (e.key === "Enter") $("tokSave").click(); if (e.key === "Escape") $("tokX").click(); };
+$("tokDel").onclick = () => {
+  if (!confirm("Remove the saved Hugging Face token?")) return;
+  act(async () => { renderToken(await api("hf/token", {method: "DELETE"})); $("tokForm").hidden = true; }, "token removed");
+};
+
+// ── models ──────────────────────────────────────────────────────────────
+async function loadModels() {
+  try { S.models = await api("models"); } catch (e) { $("models").innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
+  const m = S.models, d = m.disk;
+  $("diskTxt").textContent = `${gb(d.used)} used · ${gb(d.free)} free`;
+  $("diskBar").style.width = (d.used / d.total * 100).toFixed(1) + "%";
+  const row = (x, kind) => `<tr><td class="path">${kind === "hf" ? `${esc(x.repo)}<br><span style="color:var(--dim);font-size:11px">${esc(x.path)}</span>` : esc(x.path)}</td>
+    <td>${kind === "hf" ? `<span class="chip">${!x.complete ? "partial" : x.kind === "hub" ? "hf cache" : "folder"}</span>` : `<span class="chip ${x.role}">${x.role}</span>`}${x.in_use ? ` <span class="chip use">in config</span>` : ""}</td>
+    <td class="r">${gb(x.size)}</td><td class="r"><button class="btn sm danger" data-del="${esc(x.path)}" title="delete">Delete</button></td></tr>`;
+  $("models").innerHTML = (m.gguf.length || m.hf.length) ? `<table><thead><tr><th>Path</th><th>Type</th><th class="r">Size</th><th></th></tr></thead><tbody>
+    ${m.gguf.map(x => row(x, "gguf")).join("")}${m.hf.map(x => row(x, "hf")).join("")}</tbody></table>` : `<div class="empty">no models yet — download one below</div>`;
+  $("models").querySelectorAll("[data-del]").forEach(b => b.onclick = () => {
+    const p = b.dataset.del;
+    if (!confirm(`Permanently delete /models/${p}?`)) return;
+    act(async () => { await api("models?path=" + encodeURIComponent(p), {method: "DELETE"}); await loadModels(); }, `deleted ${p}`);
+  });
+  if (S.schema && S.draft) renderParams();
+}
+
+// ── downloads ───────────────────────────────────────────────────────────
+// owner (or search words) → repo list → repo → quants/files; owner/repo jumps straight to the repo
+$("dlForm").onsubmit = e => {
+  e.preventDefault();
+  const q = $("dlRepo").value.trim(); if (!q && !hfFilters().active) return;
+  /^[\w.-]+\/[\w.-]+$/.test(q) ? openRepo(q) : searchRepos(q);
+};
+// task / format / sort narrow every browse; changing one re-runs the listing that is showing
+function hfFilters() {
+  const f = {task: $("fTask").value, format: $("fFmt").value, sort: $("fSort").value};
+  f.active = !!(f.task || f.format); return f;
+}
+["fTask", "fFmt", "fSort"].forEach(id => $(id).onchange = () => {
+  const f = hfFilters(); $("fClear").hidden = !f.active && f.sort === "downloads";
+  if (S.browse && $("files").hidden && $("hfBrowse").innerHTML) searchRepos(S.browse.query);
+  else if (!S.browse && f.active && !$("dlRepo").value.trim()) searchRepos("");
+});
+$("fClear").onclick = () => { $("fTask").value = $("fFmt").value = ""; $("fSort").value = "downloads"; $("fTask").onchange(); };
+function browsing(on) { $("dlBrowse").disabled = on; $("dlBrowse").textContent = on ? "Loading…" : "Browse"; }
+const fmtCount = n => n == null ? "" : n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(0) + "K" : String(n);
+async function searchRepos(q) {
+  browsing(true);
+  try {
+    const f = hfFilters();
+    S.browse = await api("hf/search?" + new URLSearchParams({q, task: f.task, format: f.format, sort: f.sort}));
+    $("dlRepo").value = q; $("files").hidden = true; renderBrowse();
+  } catch (e) { toast(e.message, true); }
+  browsing(false);
+}
+function renderBrowse() {
+  const r = S.browse;
+  const sorts = {trendingScore: "trending", likes: "by likes", lastModified: "recently updated", createdAt: "newest"};
+  const what = [r.task, r.format, sorts[r.sort]].filter(Boolean).map(x => `<span class="chip">${esc(x)}</span>`).join("");
+  $("hfBrowse").innerHTML = `<div class="crumbs"><span>${{author: "repos by", search: "search", browse: "all of Hugging Face"}[r.mode]}</span>${r.query ? `<b>${esc(r.query)}</b>` : ""}${what}<span class="tag">${r.repos.length}${r.repos.length >= 40 ? "+" : ""}</span><span class="sp"></span><button class="btn sm ghost" id="brX" type="button">Close</button></div>`
+    + (r.repos.length ? `<div class="repo-list">${r.repos.map(x => `<button class="repo" type="button" data-repo="${esc(x.id)}">
+        <span>${esc(x.id)}${x.gated ? ` <span class="chip tight">gated</span>` : ""}</span>
+        <span class="rm">${x.formats.map(f => `<span class="chip">${esc(f)}</span>`).join("")}${x.pipeline ? `<span>${esc(x.pipeline)}</span>` : ""}<span title="downloads">↓ ${fmtCount(x.downloads)}</span><span title="likes">♥ ${fmtCount(x.likes)}</span>${x.updated ? `<span>${esc(x.updated.slice(0, 10))}</span>` : ""}</span></button>`).join("")}</div>`
+      : `<div class="empty">nothing found${r.query ? ` for “${esc(r.query)}”` : ""}${what ? " with these filters" : ""}</div>`);
+  $("brX").onclick = () => { $("hfBrowse").innerHTML = ""; };
+  $("hfBrowse").querySelectorAll("[data-repo]").forEach(b => b.onclick = () => openRepo(b.dataset.repo));
+}
+async function openRepo(repo) {
+  browsing(true);
+  try {
+    S.files = await api(`hf/files?repo=${encodeURIComponent(repo)}&revision=${encodeURIComponent($("dlRev").value.trim())}`);
+    S.files.sel = new Set();
+    $("dlRepo").value = S.files.repo;
+    const p = S.files.plan, ggufs = S.files.files.filter(f => /\.gguf$/i.test(f.name));
+    document.querySelector(`input[name=layout][value=${ggufs.length ? "gguf" : "hf"}]`).checked = true;
+    if (p.kind === "gguf") { const rec = p.groups.find(g => g.recommended); (rec?.files || []).forEach(f => S.files.sel.add(f)); }
+    else if (!ggufs.length) S.files.files.forEach(f => S.files.sel.add(f.name));
+    const [owner, name] = S.files.repo.split("/");
+    $("hfBrowse").innerHTML = `<div class="crumbs"><button class="link" type="button" id="crOwner" title="all repos by ${esc(owner)}">${esc(owner)}</button><span>/</span><b>${esc(name)}</b>${S.files.gated ? `<span class="chip tight">gated — needs an HF token</span>` : ""}<span class="sp"></span>${S.browse ? `<button class="btn sm ghost" id="crBack" type="button">← results</button>` : ""}</div>`;
+    $("crOwner").onclick = () => searchRepos(owner);
+    if ($("crBack")) $("crBack").onclick = () => renderBrowse();
+    $("files").hidden = false; $("fQ").value = ""; renderFiles();
+  } catch (e) { toast(e.message, true); }
+  browsing(false);
+}
+function renderQuants() {
+  const p = S.files?.plan, el = $("quants");
+  if (!p || p.kind === "other") { el.innerHTML = ""; return; }
+  const vram = `${(p.vram.total / 2 ** 30).toFixed(0)} GB · ${esc(p.vram.gpus)}${p.vram.measured ? "" : " (assumed)"}`;
+  if (p.kind === "safetensors") {
+    const name = S.files.repo.split("/")[1].replace(/[-_](instruct|it|chat|hf)$/i, "");
+    el.innerHTML = `<div class="qplan"><span><span class="chip ${p.fit}">${{fits: "fits", tight: "tight", tp: "multi-GPU", "too-big": "too big"}[p.fit]}</span> ${esc(p.why)} <span style="color:var(--dim)">(${vram})</span></span>
+      ${p.fit === "fits" ? "" : `<span class="bact">${["AWQ", "GPTQ", "FP8"].map(k => `<button class="btn sm ghost" type="button" data-find="${esc(name + " " + k)}">${k} builds</button>`).join("")}</span>`}</div>`;
+    if (p.gpu_note) el.insertAdjacentHTML("beforeend", `<div class="qnote">${esc(p.gpu_note)}</div>`);
+    el.querySelectorAll("[data-find]").forEach(b => b.onclick = () => searchRepos(b.dataset.find));
+    return;
+  }
+  const label = {fits: "fits", tight: "tight", offload: "CPU offload"};
+  const rec = p.groups.find(g => g.recommended);
+  el.innerHTML = `<div class="qplan"><span>${rec ? "★ " : ""}${esc(p.why)} <span style="color:var(--dim)">(${vram})</span></span>${rec ? `<button class="btn sm" type="button" id="qRec">Select recommended</button>` : ""}</div>
+    <div class="qtab">${p.groups.map((g, i) => {
+      const on = g.files.every(f => S.files.sel.has(f));
+      return `<label class="${g.recommended ? "rec" : ""}"><input type="checkbox" data-g="${i}"${on ? " checked" : ""}>
+        <span>${esc(g.quant)}${g.dir ? ` <span style="color:var(--dim)">${esc(g.dir)}/</span>` : ""}</span>
+        <span>${g.recommended ? `<span class="chip star">recommended</span>` : g.fit ? `<span class="chip ${g.fit}">${label[g.fit]}</span>` : `<span class="chip">${esc(g.kind)}</span>`}</span>
+        <span style="color:var(--muted)">${g.files.length > 1 ? g.files.length + " parts" : ""}</span>
+        <span>${gb(g.size)}</span></label>`;
+    }).join("")}</div>`;
+  el.querySelectorAll("[data-g]").forEach(cb => cb.onchange = () => {
+    p.groups[+cb.dataset.g].files.forEach(f => cb.checked ? S.files.sel.add(f) : S.files.sel.delete(f));
+    renderFiles();
+  });
+  if ($("qRec")) $("qRec").onclick = () => {
+    p.groups.filter(g => g.kind === "model").forEach(g => g.files.forEach(f => S.files.sel.delete(f)));
+    rec.files.forEach(f => S.files.sel.add(f));
+    renderFiles();
+  };
+}
+function shownFiles() { const q = $("fQ").value.trim().toLowerCase(); return S.files.files.filter(f => !q || f.name.toLowerCase().includes(q)); }
+function renderFiles() {
+  const list = shownFiles();
+  $("fList").innerHTML = list.map(f => `<label><input type="checkbox" data-f="${esc(f.name)}" ${S.files.sel.has(f.name) ? "checked" : ""}><span>${esc(f.name)}</span><span style="color:var(--muted)">${gb(f.size)}</span></label>`).join("") || `<div class="empty" style="padding:12px">no files match</div>`;
+  $("fList").querySelectorAll("input").forEach(cb => cb.onchange = () => { cb.checked ? S.files.sel.add(cb.dataset.f) : S.files.sel.delete(cb.dataset.f); renderSel(); });
+  renderSel();
+}
+function renderSel() {
+  const total = S.files.files.filter(f => S.files.sel.has(f.name)).reduce((a, f) => a + (f.size || 0), 0);
+  const free = S.models?.disk.free;
+  $("fSel").innerHTML = `${S.files.sel.size} files · ${gb(total)}${free != null && total > free ? ` <span style="color:var(--red)">exceeds free disk</span>` : ""}${S.files.gated ? ` · <span style="color:var(--amber)">gated</span>` : ""}`;
+  $("dlGo").disabled = !S.files.sel.size;
+  renderQuants();
+}
+$("fQ").oninput = renderFiles;
+$("fAll").onclick = () => { shownFiles().forEach(f => S.files.sel.add(f.name)); renderFiles(); };
+$("fNone").onclick = () => { S.files.sel.clear(); renderFiles(); };
+$("dlGo").onclick = () => {
+  const layout = document.querySelector("input[name=layout]:checked").value;
+  const files = S.files.files.filter(f => S.files.sel.has(f.name)).map(f => f.name);
+  const all = files.length === S.files.files.length;
+  act(async () => {
+    await api("downloads", {method: "POST", body: {repo: S.files.repo, revision: S.files.revision, layout, files: all ? null : files}});
+    $("files").hidden = true; $("hfBrowse").innerHTML = ""; loadJobs();
+  }, `downloading ${files.length} file${files.length === 1 ? "" : "s"} from ${S.files.repo}`);
+};
+async function loadJobs() {
+  let jobs; try { jobs = await api("downloads"); } catch { return; }
+  const was = S.activeJobs || 0; S.activeJobs = jobs.filter(j => j.status === "downloading").length;
+  if (was && !S.activeJobs) loadModels();
+  $("jobs").innerHTML = jobs.slice(0, 8).map(j => {
+    const pct = j.total ? j.done / j.total * 100 : 0, el = j.finished ? j.finished - j.started : Date.now() / 1000 - j.started;
+    const rate = el > 0 ? j.done / el : 0, eta = rate > 0 && j.status === "downloading" ? (j.total - j.done) / rate : null;
+    return `<div class="job ${j.status}"><div class="job-h"><span>${esc(j.repo)} <span style="color:var(--dim)">→ /models/${esc(j.dest === "." ? "" : j.dest)}</span></span>
+      ${j.status === "downloading" ? `<button class="btn sm danger" data-cancel="${j.id}">Cancel</button>` : `<span class="chip ${j.status === "done" ? "use" : ""}">${j.status}</span>`}</div>
+      <div class="bar"><i style="width:${(j.status === "done" ? 100 : pct).toFixed(1)}%"></i></div>
+      <div class="job-f"><span>${gb(j.done)} / ${gb(j.total)} · ${j.files.length} file${j.files.length === 1 ? "" : "s"}</span><span>${j.status === "downloading" ? `${gb(rate)}/s${eta != null ? " · " + dur(eta) + " left" : ""}` : dur(el)}</span></div>
+      ${j.error ? `<div class="err">${esc(j.error)}</div>` : ""}</div>`;
+  }).join("");
+  $("jobs").querySelectorAll("[data-cancel]").forEach(b => b.onclick = () => act(() => api("downloads/" + b.dataset.cancel, {method: "DELETE"}), "cancelled"));
+}
+
+// ── logs ────────────────────────────────────────────────────────────────
+function logClass(l) { return l.startsWith("$ ") ? "c" : /error|failed|traceback|exception|out of memory|cuda.*fail/i.test(l) ? "e" : /warn/i.test(l) ? "w" : /ready after|listening|stopping|exited/i.test(l) ? "s" : ""; }
+async function pollLogs() {
+  let r; try { r = await api("logs?after=" + S.logSeq); } catch { return; }
+  if (r.seq < S.logSeq) { S.logs = []; }
+  if (!r.lines.length) { S.logSeq = r.seq; return; }
+  S.logSeq = r.lines[r.lines.length - 1][0];
+  S.logs.push(...r.lines.map(l => l[2])); if (S.logs.length > 4000) S.logs.splice(0, S.logs.length - 4000);
+  renderLogs();
+}
+function renderLogs() {
+  const q = $("logQ").value.trim().toLowerCase(), el = $("logs");
+  const lines = q ? S.logs.filter(l => l.toLowerCase().includes(q)) : S.logs;
+  el.innerHTML = lines.slice(-1500).map(l => { const c = logClass(l); return c ? `<span class="${c}">${esc(l)}</span>` : esc(l); }).join("\n");
+  $("logTag").textContent = `${S.logs.length} lines`;
+  if ($("logFollow").checked) el.scrollTop = el.scrollHeight;
+}
+$("logQ").oninput = renderLogs;
+$("logClear").onclick = () => { S.logs = []; renderLogs(); };
+
+const shortGpu = n => String(n || "GPU").replace(/^NVIDIA\s+(GeForce\s+)?/, "");
+async function pollHW() {
+  let gpus;
+  try { gpus = ((await (await fetch(HW, {cache: "no-store"})).json()).gpus || []).map((g, i) => ({index: i, ...g})); }
+  catch { return; }
+  const known = (S.gpus || []).map(g => g.index).join(), now = gpus.map(g => g.index).join();
+  S.gpus = gpus;
+  // detected cards, right under the title
+  $("gpus").innerHTML = gpus.length ? gpus.map(g => {
+    const f = g.vram_total ? g.vram_used / g.vram_total : 0;
+    return `<span class="gpu" title="${esc(g.name)} · ${esc(g.pci_bus || "")} · driver ${esc(g.driver || "?")}"><span class="ix">${g.index}</span><b>${esc(shortGpu(g.name))}</b>
+      <span>${(g.vram_used / 1024).toFixed(1)}/${(g.vram_total / 1024).toFixed(0)} GB</span><span class="m"><i style="width:${(f * 100).toFixed(0)}%;background:${f > .95 ? "var(--red)" : f > .85 ? "var(--amber)" : "var(--cyan)"}"></i></span>
+      <span>${g.util ?? "--"}%</span><span>${g.temp ?? "--"}°C</span></span>`;
+  }).join("") : `<span class="gpu none">no CUDA GPU reported (nvidia-smi)</span>`;
+  // backend card: VRAM across the cards the selected backend may use
+  const sel = new Set((S.draft && cfgOf(S.draft.backend).values._gpus) || []);
+  const use = sel.size ? gpus.filter(g => sel.has(g.index)) : gpus;
+  if (use.length) {
+    const used = use.reduce((a, g) => a + g.vram_used, 0), total = use.reduce((a, g) => a + g.vram_total, 0), f = used / total;
+    $("vramTxt").textContent = `${(used / 1024).toFixed(1)} / ${(total / 1024).toFixed(1)} GB · ${use.length > 1 ? use.length + " GPUs" : shortGpu(use[0].name)}`;
+    $("vramBar").style.width = (f * 100).toFixed(1) + "%"; $("vramBar").style.background = f > .95 ? "var(--red)" : f > .85 ? "var(--amber)" : "var(--cyan)";
+  }
+  if (known !== now && S.schema && S.draft) renderParams();  // GPU picker needs the card list
+}
+
+window.addEventListener("beforeunload", e => { if (isDirty()) { e.preventDefault(); e.returnValue = ""; } });
+
+// vLLM's parser lists load in the background on the server; refetch the schema until they're in
+async function loadSchema() {
+  try {
+    S.schema = await api("schema");
+    if (!S.schema._parsers_ready) setTimeout(async () => { await loadSchema(); if (S.draft?.backend === "vllm") renderParams(); }, 10000);
+  } catch (e) { toast(e.message, true); }
+}
+
+(async () => {
+  await loadSchema();
+  await loadTemplates(); await loadState(); await loadModels();
+  if (S.schema && S.draft) renderParams();
+  loadJobs(); pollLogs(); pollHW(); loadToken();
+  setInterval(loadState, 1500); setInterval(pollLogs, 1000); setInterval(loadJobs, 1500); setInterval(pollHW, 2000);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,893 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Inference Overdrive</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M18 2 6 18h8l-2 12 12-16h-8z' fill='%23a6ff3d'/%3E%3C/svg%3E">
+<style>
+:root{
+  --bg:#05070b; --panel:#0a0e15; --panel2:#0e141e; --line:#18202c; --line2:#233042;
+  --text:#e9eef6; --muted:#8392a7; --dim:#4a5669;
+  --cyan:#38e1ff; --lime:#a6ff3d; --amber:#ffb224; --red:#ff4a5f; --violet:#a58bff;
+  --heat:0;
+  --mono:"JetBrains Mono","Cascadia Mono","SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  --sans:Inter,"Segoe UI Variable","Segoe UI",system-ui,-apple-system,sans-serif;
+  --r:14px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{background:var(--bg)}
+body{
+  min-height:100vh;padding:16px;color:var(--text);font:13px/1.4 var(--sans);
+  background:
+    radial-gradient(1400px 520px at 50% -260px, color-mix(in oklab, var(--lime) calc(var(--heat) * 16%), transparent), transparent),
+    radial-gradient(900px 420px at 0% 0%, rgba(56,225,255,.06), transparent),
+    var(--bg);
+  -webkit-font-smoothing:antialiased;
+}
+body::before{
+  content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+  background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);
+  background-size:44px 44px;opacity:.22;
+  -webkit-mask-image:radial-gradient(ellipse 80% 60% at 50% 0%,#000 20%,transparent 75%);
+          mask-image:radial-gradient(ellipse 80% 60% at 50% 0%,#000 20%,transparent 75%);
+}
+.num,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.wrap{position:relative;z-index:1;max-width:1720px;margin:0 auto;display:grid;gap:12px}
+
+/* ── header ─────────────────────────────────────────── */
+header{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:4px 2px 6px}
+.brand{display:flex;align-items:center;gap:14px;min-width:0}
+.mark{width:40px;height:40px;border-radius:11px;display:grid;place-items:center;flex:none;
+  background:linear-gradient(145deg,#141c28,#0a0f16);border:1px solid var(--line2);
+  box-shadow:0 0 calc(6px + var(--heat) * 26px) color-mix(in oklab, var(--lime) calc(20% + var(--heat) * 50%), transparent)}
+.mark svg{width:22px;height:22px}
+.title{display:flex;flex-direction:column;min-width:0}
+.title h1{font:700 15px/1.1 var(--mono);letter-spacing:.22em}
+.title h1 span{color:var(--lime);font-weight:400}
+.title .model{font:12px/1.3 var(--mono);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.title .model b{color:var(--text);font-weight:600}
+.chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.gtabs{display:flex;gap:3px}
+.gtab{font:700 9.5px/1 var(--mono);letter-spacing:.08em;color:var(--muted);background:transparent;border:1px solid var(--line2);border-radius:5px;padding:4px 6px;cursor:pointer}
+.gtab.on{background:var(--cyan);border-color:var(--cyan);color:var(--bg)}
+nav{display:flex;gap:4px;padding:4px;border:1px solid var(--line2);border-radius:999px;background:rgba(255,255,255,.02)}
+nav a{font:600 10.5px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--muted);padding:7px 12px;border-radius:999px;text-decoration:none}
+nav a.on{background:var(--text);color:var(--bg)}
+.chip{font:600 10.5px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
+  border:1px solid var(--line2);background:rgba(255,255,255,.02);border-radius:999px;padding:6px 10px;white-space:nowrap}
+.chip b{color:var(--text);font-weight:600}
+.pill{display:inline-flex;align-items:center;gap:8px;font:700 11px/1 var(--mono);letter-spacing:.14em;padding:7px 12px;border-radius:999px;
+  border:1px solid currentColor;color:var(--dim);background:color-mix(in oklab, currentColor 10%, transparent)}
+.pill i{width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 10px currentColor}
+.pill.live{color:var(--cyan)} .pill.gen{color:var(--lime)} .pill.warm{color:var(--amber)} .pill.off{color:var(--red)}
+.pill.gen i,.pill.warm i{animation:pulse 1s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.25;transform:scale(.7)}}
+
+/* ── panels ─────────────────────────────────────────── */
+.panel{position:relative;background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--line);border-radius:var(--r);padding:16px;min-width:0}
+.panel::before{content:"";position:absolute;left:16px;right:16px;top:-1px;height:1px;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.14),transparent)}
+.panel h2{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:14px;
+  font:600 10.5px/1 var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--muted)}
+.panel h2 .tag{font-size:9.5px;letter-spacing:.12em;color:var(--dim);border:1px solid var(--line2);border-radius:5px;padding:4px 6px}
+.lbl{font:600 10px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
+
+/* ── KPI strip ──────────────────────────────────────── */
+.kpis{display:grid;grid-template-columns:repeat(7,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.kpi{background:var(--panel);padding:12px 14px;min-width:0}
+.kpi .v{font:600 20px/1.15 var(--mono);font-variant-numeric:tabular-nums;margin-top:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kpi .v small{font-size:11px;color:var(--muted);font-weight:400;margin-left:3px}
+
+/* ── hero ───────────────────────────────────────────── */
+.hero{display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:12px}
+.tach{display:flex;flex-direction:column;overflow:hidden}
+.tach.hot{border-color:color-mix(in oklab, var(--lime) 45%, var(--line))}
+.tach.hot::after{content:"";position:absolute;inset:-1px;border-radius:inherit;padding:1px;pointer-events:none;
+  background:conic-gradient(from var(--spin,0deg),transparent 0 70%,var(--lime) 85%,var(--cyan) 95%,transparent);
+  -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;
+  animation:spin 2.4s linear infinite}
+@property --spin{syntax:"<angle>";inherits:false;initial-value:0deg}
+@keyframes spin{to{--spin:360deg}}
+.gauge{position:relative;width:100%;max-width:440px;margin:-6px auto 0;aspect-ratio:300/250}
+.gauge svg{width:100%;height:100%;overflow:visible}
+.g-trk{fill:none;stroke:#121924;stroke-width:16;stroke-linecap:round}
+.g-red{fill:none;stroke:var(--red);stroke-width:16;opacity:.22}
+.g-val{fill:none;stroke:url(#gGrad);stroke-width:16;stroke-linecap:round;filter:drop-shadow(0 0 calc(2px + var(--heat) * 10px) rgba(166,255,61,.55))}
+.g-tick{stroke:var(--dim);stroke-width:1.5}
+.g-tick.maj{stroke:var(--muted);stroke-width:2.2}
+.g-num{fill:var(--dim);font:600 10px var(--mono);text-anchor:middle;dominant-baseline:middle}
+.g-needle{stroke:var(--text);stroke-width:3;stroke-linecap:round;filter:drop-shadow(0 0 6px rgba(255,255,255,.45))}
+.g-hub{fill:#0b1018;stroke:var(--line2);stroke-width:2}
+.g-peak{fill:var(--amber)}
+.g-center{position:absolute;left:0;right:0;top:66%;text-align:center;pointer-events:none}
+.g-center .v{font:700 clamp(40px,5.2vw,68px)/1 var(--mono);font-variant-numeric:tabular-nums;letter-spacing:-.02em;
+  text-shadow:0 0 6px var(--bg),0 0 14px var(--bg),0 0 calc(var(--heat) * 28px) rgba(166,255,61,.45)}
+.g-center .u{margin-top:6px}
+.tach-foot{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:auto;padding-top:8px;border-top:1px dashed var(--line2)}
+.tach-foot div{text-align:center}
+.tach-foot .num{display:block;font-size:17px;font-weight:600;margin-top:6px}
+.badge{position:absolute;top:12px;right:72px;font:700 10px/1 var(--mono);letter-spacing:.16em;color:var(--bg);background:var(--amber);
+  padding:5px 8px;border-radius:5px;opacity:0;transform:translateY(-4px);transition:.3s}
+.badge.on{opacity:1;transform:none}
+
+/* spec decode */
+.spec-top{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;margin-bottom:16px}
+.gain{font:700 54px/0.95 var(--mono);font-variant-numeric:tabular-nums;letter-spacing:-.03em;
+  background:linear-gradient(120deg,var(--violet),var(--cyan));-webkit-background-clip:text;background-clip:text;color:transparent}
+.gain small{font-size:26px}
+.spec-side{text-align:right}
+.spec-side .num{display:block;font-size:24px;font-weight:700;color:var(--cyan);margin-top:6px}
+.funnel{display:grid;gap:9px}
+.frow{display:grid;grid-template-columns:34px 1fr 52px;align-items:center;gap:10px}
+.fbar{height:12px;border-radius:6px;background:#111823;overflow:hidden;position:relative}
+.fbar i{position:absolute;inset:0 auto 0 0;width:0;border-radius:6px;transition:width .7s cubic-bezier(.2,.8,.2,1);
+  background:linear-gradient(90deg,var(--violet),var(--cyan));box-shadow:0 0 12px rgba(56,225,255,.35)}
+.frow .num{text-align:right;font-size:12px}
+.spec-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:16px;padding-top:12px;border-top:1px dashed var(--line2)}
+.spec-stats .num{display:block;font-size:15px;font-weight:600;margin-top:6px}
+
+/* rings */
+.rings{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.ring{position:relative;aspect-ratio:1}
+.ring svg{width:100%;height:100%;transform:rotate(-90deg)}
+.ring .trk{fill:none;stroke:#121924;stroke-width:9}
+.ring .val{fill:none;stroke-width:9;stroke-linecap:round;stroke-dasharray:0 100;transition:stroke-dasharray .6s cubic-bezier(.2,.8,.2,1),stroke .3s}
+.ring .rv{position:absolute;inset:0;display:grid;place-content:center;text-align:center}
+.ring .rv b{font:700 clamp(13px,1.35vw,18px)/1 var(--mono);font-variant-numeric:tabular-nums}
+.ring .rv span{font:600 8.5px/1 var(--mono);letter-spacing:.14em;color:var(--dim);margin-top:5px}
+.kv{display:grid;grid-template-columns:1fr 1fr;gap:1px 14px;margin-top:14px}
+.kv div{display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);font-size:12px;color:var(--muted);min-width:0}
+.kv div b{font:600 12px var(--mono);color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* ── middle ─────────────────────────────────────────── */
+.mid{display:grid;grid-template-columns:2.1fr 1fr;gap:12px}
+.chart{position:relative;height:280px}
+.chart canvas{position:absolute;inset:0;width:100%;height:100%}
+.legend{display:flex;gap:14px;font:600 10px/1 var(--mono);letter-spacing:.1em;color:var(--muted)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend i{width:10px;height:3px;border-radius:2px;background:currentColor}
+
+.lanes{display:grid;gap:10px}
+.lane{border:1px solid var(--line);border-radius:11px;padding:12px;background:rgba(255,255,255,.012);transition:border-color .3s,background .3s}
+.lane.gen{border-color:color-mix(in oklab, var(--lime) 50%, var(--line));background:color-mix(in oklab, var(--lime) 4%, transparent)}
+.lane.pre{border-color:color-mix(in oklab, var(--cyan) 50%, var(--line))}
+.lane-h{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.state{font:700 9.5px/1 var(--mono);letter-spacing:.14em;padding:4px 7px;border-radius:5px;background:#151c27;color:var(--dim)}
+.lane.gen .state{background:var(--lime);color:#0a1400}
+.lane.pre .state{background:var(--cyan);color:#001318}
+.lane-rate{display:flex;align-items:baseline;gap:6px;margin:10px 0 8px}
+.lane-rate .num{font-size:30px;font-weight:700}
+.ctx{height:8px;border-radius:4px;background:#111823;overflow:hidden;display:flex}
+.ctx i{height:100%;transition:width .4s}
+.ctx .p{background:var(--cyan)} .ctx .g{background:var(--lime)}
+.lane-f{display:flex;justify-content:space-between;margin-top:7px;font:11px var(--mono);color:var(--muted)}
+.lane-f b{color:var(--text);font-weight:600}
+
+/* ── bottom ─────────────────────────────────────────── */
+.bottom{display:grid;grid-template-columns:2.1fr 1fr;gap:12px}
+.tbl{overflow:auto;max-height:340px}
+table{width:100%;border-collapse:collapse;font:12px var(--mono);font-variant-numeric:tabular-nums}
+th{position:sticky;top:0;background:var(--panel2);text-align:right;font:600 9.5px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dim);padding:0 10px 10px;white-space:nowrap}
+td{text-align:right;padding:8px 10px;border-top:1px solid var(--line);white-space:nowrap}
+th:first-child,td:first-child{text-align:left;padding-left:0}
+td.hi{color:var(--lime);font-weight:700}
+tr.new td{animation:flash 1.6s ease-out}
+@keyframes flash{from{background:color-mix(in oklab, var(--lime) 16%, transparent)}}
+.empty{color:var(--dim);font:12px var(--mono);padding:26px 0;text-align:center}
+.acc{display:inline-block;min-width:44px}
+
+.sys{display:grid;gap:14px}
+.cpu-top{display:flex;gap:14px;align-items:center}
+.cpu-top .ring{width:92px;flex:none}
+.cores{flex:1;display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:3px;height:62px;align-items:end}
+.cores i{display:block;border-radius:2px 2px 0 0;min-height:2px;background:linear-gradient(0deg,var(--amber),#ffd27a);transition:height .5s}
+.bar{height:8px;border-radius:4px;background:#111823;overflow:hidden;margin-top:7px}
+.bar i{display:block;height:100%;width:0;border-radius:4px;transition:width .6s}
+.row-h{display:flex;justify-content:space-between;align-items:baseline;font-size:12px;color:var(--muted)}
+.row-h b{font:600 12px var(--mono);color:var(--text)}
+
+footer{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;color:var(--dim);font:11px var(--mono);padding:2px}
+footer a{color:var(--muted)}
+
+@media (max-width:1280px){
+  .kpis{grid-template-columns:repeat(4,1fr)}
+  .kpi:last-child{grid-column:span 2}
+  .hero{grid-template-columns:1fr 1fr}
+  .tach{grid-column:1/-1}
+  .mid,.bottom{grid-template-columns:1fr}
+}
+@media (max-width:720px){
+  body{padding:10px}
+  .kpis{grid-template-columns:repeat(2,1fr)}
+  .hero{grid-template-columns:1fr}
+  .rings{grid-template-columns:repeat(2,1fr);max-width:320px;margin:0 auto}
+  .chart{height:220px}
+  .gain{font-size:44px}
+}
+@media (prefers-reduced-motion:reduce){
+  *,*::after{animation:none!important;transition:none!important}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="brand">
+    <div class="mark"><svg viewBox="0 0 24 24"><path d="M13.5 1.5 4 13.5h6.5L9 22.5l10-13h-6.5z" fill="var(--lime)"/></svg></div>
+    <div class="title">
+      <h1>INFERENCE <span>OVERDRIVE</span></h1>
+      <div class="model" id="model">connecting to the LLM server…</div>
+    </div>
+  </div>
+  <div class="chips">
+    <nav><a href="./" class="on">Monitor</a><a href="../server/">Server</a><a class="chatlink" href="#" target="_blank" rel="noopener" title="Open WebUI">Chat ↗</a></nav>
+    <span class="chip"><b id="chipBackend">--</b></span>
+    <span class="chip" id="chipBuild">build <b>--</b></span>
+    <span class="chip" id="chipCtx">ctx <b>--</b></span>
+    <span class="chip" id="chipSpec">spec <b>--</b></span>
+    <span class="chip" id="chipMod">--</span>
+    <span class="pill" id="pill"><i></i><span>CONNECTING</span></span>
+  </div>
+</header>
+
+<section class="kpis">
+  <div class="kpi"><div class="lbl">Generated</div><div class="v" id="kGen">--</div></div>
+  <div class="kpi"><div class="lbl">Prompt evaluated</div><div class="v" id="kPrompt">--</div></div>
+  <div class="kpi"><div class="lbl">Prompt cached</div><div class="v" id="kCached">--</div></div>
+  <div class="kpi"><div class="lbl">Avg gen</div><div class="v" id="kAvgGen">--</div></div>
+  <div class="kpi"><div class="lbl">Avg prefill</div><div class="v" id="kAvgPrompt">--</div></div>
+  <div class="kpi"><div class="lbl" id="kDecodesLbl">Decode calls</div><div class="v" id="kDecodes">--</div></div>
+  <div class="kpi"><div class="lbl">Active · Queued</div><div class="v" id="kQueue">--</div></div>
+</section>
+
+<section class="hero">
+  <div class="panel tach" id="tachPanel">
+    <h2>Throughput <span class="tag">LIVE</span></h2>
+    <div class="badge" id="peakBadge">NEW PEAK</div>
+    <div class="gauge">
+      <svg viewBox="0 0 300 250" aria-label="Generation speed gauge">
+        <defs>
+          <linearGradient id="gGrad" x1="0" x2="1" y1="0" y2="0">
+            <stop offset="0" stop-color="#38e1ff"/><stop offset=".6" stop-color="#a6ff3d"/><stop offset="1" stop-color="#ffb224"/>
+          </linearGradient>
+        </defs>
+        <path class="g-trk" id="gTrk"/>
+        <path class="g-red" id="gRed"/>
+        <path class="g-val" id="gVal" pathLength="100" stroke-dasharray="0 200" style="opacity:0"/>
+        <g id="gTicks"></g>
+        <path class="g-peak" id="gPeak" d="M0 0"/>
+        <line class="g-needle" id="gNeedle" x1="150" y1="150" x2="150" y2="62"/>
+        <circle class="g-hub" cx="150" cy="150" r="9"/>
+      </svg>
+      <div class="g-center"><div class="v" id="gValue">0.0</div><div class="lbl u">tokens / second</div></div>
+    </div>
+    <div class="tach-foot">
+      <div><span class="lbl">Peak</span><span class="num" id="tPeak">--</span></div>
+      <div><span class="lbl">Last request</span><span class="num" id="tLast">--</span></div>
+      <div><span class="lbl">Lifetime avg</span><span class="num" id="tAvg">--</span></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2><span id="specTitle">Speculative decoding</span> <span class="tag" id="specTag">SESSION</span></h2>
+    <div class="spec-top">
+      <div>
+        <div class="gain num" id="sGain">--<small>×</small></div>
+        <div class="lbl" style="margin-top:8px">tokens per target pass</div>
+      </div>
+      <div class="spec-side">
+        <span class="lbl">Acceptance</span><span class="num" id="sAcc">--</span>
+      </div>
+    </div>
+    <div class="funnel" id="funnel"></div>
+    <div class="spec-stats">
+      <div><span class="lbl">Draft rounds</span><span class="num" id="sDrafts">--</span></div>
+      <div><span class="lbl">Drafted</span><span class="num" id="sDrafted">--</span></div>
+      <div><span class="lbl">Accepted</span><span class="num" id="sAccepted">--</span></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2><span id="gpuName">GPU</span> <span style="display:flex;gap:6px;align-items:center"><span class="gtabs" id="gpuTabs"></span><span class="tag" id="gpuPstate">--</span></span></h2>
+    <div class="rings">
+      <div class="ring" id="rUtil"></div>
+      <div class="ring" id="rVram"></div>
+      <div class="ring" id="rPower"></div>
+      <div class="ring" id="rTemp"></div>
+    </div>
+    <div class="kv">
+      <div>Core clock<b id="gClk">--</b></div>
+      <div>Mem clock<b id="gMclk">--</b></div>
+      <div>VRAM<b id="gVram">--</b></div>
+      <div>Mem bus<b id="gMemUtil">--</b></div>
+      <div>Fan<b id="gFan">--</b></div>
+      <div>PCIe<b id="gPcie">--</b></div>
+      <div>Driver<b id="gDrv">--</b></div>
+      <div>Board power<b id="gPwr">--</b></div>
+    </div>
+  </div>
+</section>
+
+<section class="mid">
+  <div class="panel">
+    <h2>Telemetry · last 2 min
+      <span class="legend">
+        <span style="color:var(--lime)"><i></i>GEN TOK/S</span>
+        <span style="color:var(--amber)"><i></i><span id="gpuLegend">GPU %</span></span>
+        <span style="color:var(--violet)"><i></i>REQUEST</span>
+      </span>
+    </h2>
+    <div class="chart"><canvas id="chart"></canvas></div>
+  </div>
+  <div class="panel">
+    <h2>Slots <span class="tag" id="slotTag">--</span></h2>
+    <div class="lanes" id="lanes"><div class="empty">waiting for /slots…</div></div>
+  </div>
+</section>
+
+<section class="bottom">
+  <div class="panel">
+    <h2>Requests <span class="tag" id="reqTag">0</span></h2>
+    <div class="tbl">
+      <table>
+        <thead><tr><th>Time</th><th>Prompt</th><th>Cached</th><th>Generated</th><th>Gen tok/s</th><th>Prefill tok/s</th><th>Accept</th><th>Wall</th></tr></thead>
+        <tbody id="reqs"></tbody>
+      </table>
+      <div class="empty" id="reqEmpty">no completed requests yet — send one and watch the gauge</div>
+    </div>
+  </div>
+  <div class="panel sys">
+    <h2>System <span class="tag" id="sysTag">--</span></h2>
+    <div class="cpu-top">
+      <div class="ring" id="rCpu"></div>
+      <div style="flex:1;min-width:0">
+        <div class="row-h"><span>Per thread</span><b id="cpuFreq">--</b></div>
+        <div class="cores" id="cores"></div>
+      </div>
+    </div>
+    <div><div class="row-h"><span>RAM</span><b id="ramTxt">--</b></div><div class="bar"><i id="ramBar" style="background:var(--violet)"></i></div></div>
+    <div><div class="row-h"><span id="diskLbl">Disk</span><b id="diskTxt">--</b></div><div class="bar"><i id="diskBar" style="background:var(--cyan)"></i></div></div>
+    <div class="kv" style="margin-top:0">
+      <div>LLM RSS<b id="pRss">--</b></div>
+      <div>LLM CPU<b id="pCpu">--</b></div>
+      <div>Threads<b id="pThr">--</b></div>
+      <div>Uptime<b id="pUp">--</b></div>
+      <div>Load avg<b id="load">--</b></div>
+      <div>Cores<b id="cpuCores">--</b></div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <span id="foot">polling…</span>
+  <span><a href="../server/">server</a> · <a class="chatlink" href="#" target="_blank" rel="noopener">chat (Open WebUI)</a> · <a href="../metrics">/metrics</a> · <a href="hw">hw</a></span>
+</footer>
+</div>
+
+<script>
+"use strict";
+// ── config: ?server=http://host:8888&hw=http://host:8888/monitor/hw&poll=500 ──
+const Q = new URLSearchParams(location.search);
+const API = (Q.get("server") || new URL("..", location.href).href).replace(/\/$/, "");
+const HW_URL = Q.get("hw") || new URL("hw", location.href).href;
+const SERVER_API = API + "/server/api";
+const POLL = Math.max(200, +Q.get("poll") || 500);
+const HW_POLL = 1000;
+const WINDOW = 120_000;
+
+const $ = id => document.getElementById(id);
+const C = {lime:"#a6ff3d", cyan:"#38e1ff", amber:"#ffb224", red:"#ff4a5f", violet:"#a58bff"};
+const isNum = v => typeof v === "number" && isFinite(v);
+const fx = (v, d = 1) => isNum(v) ? v.toFixed(d) : "--";
+const fi = v => isNum(v) ? Math.round(v).toLocaleString() : "--";
+const fk = v => !isNum(v) ? "--" : v >= 1e9 ? (v/1e9).toFixed(2)+"B" : v >= 1e6 ? (v/1e6).toFixed(2)+"M" : v >= 1e4 ? (v/1e3).toFixed(1)+"K" : Math.round(v).toLocaleString();
+const gib = b => isNum(b) ? (b / 2**30).toFixed(1) : "--";
+const dur = s => !isNum(s) ? "--" : s < 60 ? s.toFixed(1)+"s" : s < 3600 ? Math.floor(s/60)+"m "+Math.floor(s%60)+"s" : Math.floor(s/3600)+"h "+Math.floor(s%3600/60)+"m";
+const setText = (id, t) => { const e = $(id); if (e && e.textContent !== t) e.textContent = t; };
+const setHTML = (id, h) => { const e = $(id); if (e && e.innerHTML !== h) e.innerHTML = h; };
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+
+// ── state ───────────────────────────────────────────────────────────────
+const S = {
+  props: null, m: null, mPrev: null, slots: [], hw: null,
+  live: 0, ema: 0, shown: 0, peak: 0, scaleMax: 60,
+  gen: [], gpu: [], marks: [],
+  track: {}, lastWall: null, log: [],
+  status: "CONNECTING", lastOk: 0, mT: 0, mPrevT: 0, rowBase: null, server: null,
+};
+
+// ── metrics parsing (llama.cpp "llamacpp:*" or vLLM "vllm:*") ────────────
+// vLLM names mapped onto the llama.cpp keys the rest of the page reads.
+const VLLM_MAP = {
+  generation_tokens_total: "tokens_predicted_total",
+  prompt_tokens_total: "prompt_tokens_total",
+  prefix_cache_hits_total: "prompt_tokens_cached_total",
+  request_decode_time_seconds_sum: "tokens_predicted_seconds_total",
+  request_prefill_time_seconds_sum: "prompt_seconds_total",
+  num_requests_running: "requests_processing",
+  num_requests_waiting: "requests_deferred",
+  request_success_total: "requests_done",
+  kv_cache_usage_perc: "kv_usage",
+  // per-request histograms: only finished requests, matching the decode/prefill time sums
+  request_generation_tokens_sum: "gen_done_tokens",
+  request_prompt_tokens_sum: "prompt_done_tokens",
+};
+function parseMetrics(text) {
+  const m = {pos: [], kind: null};
+  for (const line of text.split("\n")) {
+    if (!line || line[0] === "#") continue;
+    const r = /^(llamacpp|vllm):([a-zA-Z_]+)(\{([^}]*)\})?\s+(\S+)/.exec(line);
+    if (!r) continue;
+    const v = parseFloat(r[5]);
+    if (!isFinite(v)) continue;
+    m.kind = r[1] === "vllm" ? "vllm" : "llama.cpp";
+    if (r[2] === "spec_decode_num_accepted_tokens_per_pos_total") {
+      const p = /position="(\d+)"/.exec(r[4] || "");
+      if (p) m.pos[+p[1]] = (m.pos[+p[1]] || 0) + v;
+      continue;
+    }
+    const k = r[1] === "vllm" ? (VLLM_MAP[r[2]] || (r[2].startsWith("spec_decode") ? r[2] : "vllm_" + r[2])) : r[2];
+    m[k] = (m[k] || 0) + v;  // vLLM repeats series per engine/model label set
+  }
+  // vLLM's prompt counter includes prefix-cache hits; llama.cpp's counts only evaluated tokens
+  if (m.kind === "vllm") m.prompt_tokens_total = Math.max(0, (m.prompt_tokens_total || 0) - (m.prompt_tokens_cached_total || 0));
+  return m;
+}
+const isVllm = () => (S.m && S.m.kind === "vllm") || (S.server && S.server.backend.kind === "vllm");
+
+// ── rings ───────────────────────────────────────────────────────────────
+function makeRing(id, label) {
+  $(id).innerHTML = `<svg viewBox="0 0 100 100"><circle class="trk" cx="50" cy="50" r="42"/><circle class="val" cx="50" cy="50" r="42" pathLength="100"/></svg><div class="rv"><b>--</b><span>${label}</span></div>`;
+}
+function setRing(id, frac, text, color) {
+  const el = $(id), val = el.querySelector(".val");
+  const pct = isNum(frac) ? clamp(frac, 0, 1) * 100 : 0;
+  val.style.strokeDasharray = `${pct.toFixed(2)} 100`;
+  val.style.stroke = color;
+  val.style.filter = `drop-shadow(0 0 ${2 + pct / 14}px ${color}88)`;
+  const b = el.querySelector("b"); if (b.textContent !== text) b.textContent = text;
+}
+const heatColor = f => f > .9 ? C.red : f > .75 ? C.amber : f > .4 ? C.lime : C.cyan;
+[["rUtil","UTIL"],["rVram","VRAM"],["rPower","POWER"],["rTemp","TEMP"],["rCpu","CPU"]].forEach(([i,l]) => makeRing(i,l));
+
+// ── gauge geometry (θ: 0 = 12 o'clock, clockwise; sweep −135°…+135°) ─────
+const GX = 150, GY = 150, GR = 112, A0 = -135, A1 = 135;
+const pt = (r, deg) => { const a = deg * Math.PI / 180; return [GX + r * Math.sin(a), GY - r * Math.cos(a)]; };
+const arc = (r, a, b) => { const [x0,y0] = pt(r,a), [x1,y1] = pt(r,b); return `M${x0.toFixed(2)} ${y0.toFixed(2)}A${r} ${r} 0 ${b - a > 180 ? 1 : 0} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`; };
+const ang = v => A0 + clamp(v / S.scaleMax, 0, 1) * (A1 - A0);
+$("gTrk").setAttribute("d", arc(GR, A0, A1));
+$("gVal").setAttribute("d", arc(GR, A0, A1));
+$("gRed").setAttribute("d", arc(GR, A0 + (A1 - A0) * .86, A1));
+
+function buildTicks() {
+  const majors = 6, minors = 5; let h = "";
+  for (let i = 0; i <= majors * minors; i++) {
+    const maj = i % minors === 0, a = A0 + (A1 - A0) * i / (majors * minors);
+    const [x0,y0] = pt(GR - 14, a), [x1,y1] = pt(GR - (maj ? 24 : 19), a);
+    h += `<line class="g-tick${maj ? " maj" : ""}" x1="${x0.toFixed(1)}" y1="${y0.toFixed(1)}" x2="${x1.toFixed(1)}" y2="${y1.toFixed(1)}"/>`;
+    if (maj) { const [tx,ty] = pt(GR - 36, a); h += `<text class="g-num" x="${tx.toFixed(1)}" y="${ty.toFixed(1)}">${Math.round(S.scaleMax * i / (majors * minors))}</text>`; }
+  }
+  $("gTicks").innerHTML = h;
+}
+function rescale() {
+  // multiples of 30 keep the 6 major tick labels whole numbers
+  const want = Math.max(60, Math.ceil(Math.max(S.peak * 1.2, S.ema * 1.15) / 30) * 30);
+  if (want !== S.scaleMax) { S.scaleMax = want; buildTicks(); }
+}
+buildTicks();
+
+// ── funnel ──────────────────────────────────────────────────────────────
+function renderFunnel(pos, drafts) {
+  const n = Math.max(pos.length, 4);
+  const f = $("funnel");
+  if (f.children.length !== n) {
+    f.innerHTML = Array.from({length: n}, (_, i) =>
+      `<div class="frow"><span class="lbl">+${i + 1}</span><div class="fbar"><i></i></div><span class="num">--</span></div>`).join("");
+  }
+  [...f.children].forEach((row, i) => {
+    const r = drafts > 0 && isNum(pos[i]) ? pos[i] / drafts : null;
+    row.querySelector("i").style.width = r == null ? "0" : (r * 100).toFixed(1) + "%";
+    const t = r == null ? "--" : (r * 100).toFixed(0) + "%";
+    const s = row.querySelector(".num"); if (s.textContent !== t) s.textContent = t;
+  });
+}
+
+// ── polling ─────────────────────────────────────────────────────────────
+async function getJSON(url) { const r = await fetch(url, {cache: "no-store"}); if (!r.ok) throw Object.assign(new Error(r.status), {status: r.status}); return r.json(); }
+
+async function pollProps() {
+  try {
+    if (!isVllm()) { S.props = await getJSON(API + "/props"); renderProps(); return; }
+    // vLLM has no /props: build the same shape from /v1/models + /version
+    const [models, ver] = await Promise.all([getJSON(API + "/v1/models"), getJSON(API + "/version").catch(() => ({}))]);
+    const card = (models.data || [])[0] || {};
+    S.props = {model_alias: card.id, model_path: card.root || card.id, build_info: ver.version ? "vLLM " + ver.version : "vLLM",
+               default_generation_settings: {n_ctx: card.max_model_len}, modalities: {}, total_slots: null};
+    renderProps();
+  } catch {}
+}
+async function pollServer() {
+  try { const prev = S.server && S.server.backend.kind; S.server = await getJSON(SERVER_API + "/state");
+        if (prev && prev !== S.server.backend.kind) resetForBackend();
+        // Chat = Open WebUI on its own port of the host this page came from
+        const chat = `${location.protocol}//${location.hostname}:${S.server.webui_port || 3000}/`;
+        document.querySelectorAll(".chatlink").forEach(a => a.href = chat); } catch { S.server = null; }
+}
+function resetForBackend() {
+  Object.assign(S, {props: null, m: null, mPrev: null, slots: [], track: {}, rowBase: null, peak: 0, ema: 0, log: []});
+  renderLog();
+}
+
+async function pollLlama() {
+  const t = performance.now();
+  try {
+    const [mr, sr] = await Promise.all([
+      fetch(API + "/metrics", {cache: "no-store"}),
+      fetch(API + "/slots", {cache: "no-store"}).catch(() => null),
+    ]);
+    const loading = S.server && ["starting", "stopping"].includes(S.server.backend.state);
+    if (mr.status === 503 || (!mr.ok && loading)) { S.status = "WARMING"; S.live = 0; renderStatus(); return; }
+    if (!mr.ok) throw new Error(mr.status);
+    S.mPrev = S.m; S.mPrevT = S.mT; S.m = parseMetrics(await mr.text()); S.mT = t;
+    const slots = sr && sr.ok ? await sr.json().catch(() => null) : null;
+    S.slots = Array.isArray(slots) ? slots : [];
+    S.lastOk = Date.now();
+    if (!S.props) pollProps();
+  } catch { S.status = S.server && S.server.backend.state === "stopped" ? "STOPPED" : "OFFLINE"; S.live = 0; renderStatus(); return; }
+
+  // live tok/s from per-slot n_decoded deltas (metrics counters only update when a request finishes)
+  let rate = 0, anyGen = false, anyPre = false;
+  for (const s of S.slots) {
+    const nt = (s.next_token && s.next_token[0]) || {};
+    const dec = nt.n_decoded || 0, proc = !!s.is_processing;
+    const prev = S.track[s.id] || {dec: 0, t, proc: false, start: 0, maxDec: 0, prompt: 0};
+    if (proc && prev.proc && dec >= prev.dec && t > prev.t) rate += (dec - prev.dec) / ((t - prev.t) / 1000);
+    if (proc && !prev.proc) prev.start = t;
+    if (!proc && prev.proc) S.lastWall = (t - prev.start) / 1000;
+    if (proc) { dec > 0 ? anyGen = true : anyPre = true; }
+    S.track[s.id] = {dec, t, proc, start: prev.start, maxDec: proc ? Math.max(dec, prev.maxDec) : prev.maxDec, prompt: s.n_prompt_tokens || prev.prompt};
+  }
+  // vLLM: no /slots, but its counters move every scheduler step, so the delta is the live rate
+  if (S.m.kind === "vllm" && S.mPrev && S.mT > S.mPrevT) {
+    rate = Math.max(0, ((S.m.tokens_predicted_total || 0) - (S.mPrev.tokens_predicted_total || 0)) / ((S.mT - S.mPrevT) / 1000));
+    anyGen = (S.m.requests_processing || 0) > 0 && rate > 0;
+    anyPre = (S.m.requests_processing || 0) > 0 && !anyGen;
+  }
+  S.live = rate;
+  S.status = anyGen ? "GENERATING" : anyPre ? "PREFILL" : "LIVE";
+
+  const now = Date.now();
+  S.ema = S.ema * .45 + rate * .55;
+  S.gen.push({t: now, v: S.ema});
+  // with several cards the telemetry line is their average utilization
+  const utils = ((S.hw && S.hw.gpus) || []).map(g => g.util).filter(isNum);
+  S.gpu.push({t: now, v: utils.length ? utils.reduce((a, b) => a + b, 0) / utils.length : null});
+  const cut = now - WINDOW - 5000;
+  while (S.gen.length && S.gen[0].t < cut) S.gen.shift();
+  while (S.gpu.length && S.gpu[0].t < cut) S.gpu.shift();
+  while (S.marks.length && S.marks[0] < cut) S.marks.shift();
+
+  if (S.ema > S.peak + .05 && S.ema > 1) {
+    const first = S.peak === 0; S.peak = S.ema;
+    if (!first) { $("peakBadge").classList.add("on"); clearTimeout(S.badgeT); S.badgeT = setTimeout(() => $("peakBadge").classList.remove("on"), 1800); }
+  }
+  logRequests();
+  renderLlama();
+}
+
+async function pollHW() {
+  try { S.hw = await getJSON(HW_URL); renderHW(); } catch { setText("sysTag", "hw offline"); }
+}
+
+// one row per change in the lifetime counters, which llama-server bumps when a request finishes
+function logRequests() {
+  if (S.m && S.m.kind === "vllm") return logVllmRequests();
+  const a = S.mPrev, b = S.m;
+  if (!a || !b) return;
+  const d = k => (b[k] || 0) - (a[k] || 0);
+  const gen = d("tokens_predicted_total"), prompt = d("prompt_tokens_total");
+  if (gen <= 0 && prompt <= 0) return;
+  const genSec = d("tokens_predicted_seconds_total"), promptSec = d("prompt_seconds_total");
+  const drafted = d("spec_decode_num_draft_tokens_total"), acc = d("spec_decode_num_accepted_tokens_total");
+  // prompt counters can land at end of prefill and gen counters at end of request: fold into one row
+  const open = S.log[0];
+  if (open && open.gen === 0 && prompt === 0 && gen > 0) {
+    Object.assign(open, {gen, genTps: genSec > 0 ? gen / genSec : null, acc: drafted > 0 ? acc / drafted : null, wall: S.lastWall, fresh: true});
+    S.lastWall = null; S.marks.push(Date.now()); renderLog(); return;
+  }
+  S.log.unshift({
+    t: new Date(), prompt, cached: d("prompt_tokens_cached_total"), gen,
+    genTps: genSec > 0 ? gen / genSec : null, promptTps: promptSec > 0 ? prompt / promptSec : null,
+    acc: drafted > 0 ? acc / drafted : null, wall: S.lastWall, fresh: true,
+  });
+  S.lastWall = null;
+  S.marks.push(Date.now());
+  if (S.log.length > 60) S.log.pop();
+  renderLog();
+}
+
+// vLLM counters advance continuously, so cut a row each time requests finish
+function logVllmRequests() {
+  const b = S.m;
+  if (!S.rowBase) { S.rowBase = b; return; }
+  const a = S.rowBase, d = k => (b[k] || 0) - (a[k] || 0), n = d("requests_done");
+  if (n <= 0) return;
+  // finished-request histogram sums; the plain counters also include tokens of requests still running
+  const gen = d("gen_done_tokens"), promptAll = d("prompt_done_tokens"), cached = d("prompt_tokens_cached_total");
+  const genSec = d("tokens_predicted_seconds_total"), promptSec = d("prompt_seconds_total");
+  const drafted = d("spec_decode_num_draft_tokens_total"), acc = d("spec_decode_num_accepted_tokens_total");
+  S.log.unshift({t: new Date(), n, prompt: Math.max(0, promptAll - cached), cached, gen,
+    genTps: genSec > 0 ? gen / genSec : null, promptTps: promptSec > 0 ? promptAll / promptSec : null,
+    acc: drafted > 0 ? acc / drafted : null, wall: n === 1 ? d("vllm_e2e_request_latency_seconds_sum") || null : null, fresh: true});
+  S.rowBase = b;
+  S.marks.push(Date.now());
+  if (S.log.length > 60) S.log.pop();
+  renderLog();
+}
+
+// ── rendering ───────────────────────────────────────────────────────────
+function renderStatus() {
+  const p = $("pill"), cls = {LIVE: "live", GENERATING: "gen", PREFILL: "gen", WARMING: "warm", OFFLINE: "off", STOPPED: "off"}[S.status] || "";
+  if (p.className !== "pill " + cls) p.className = "pill " + cls;
+  p.lastElementChild.textContent = S.status === "WARMING" ? "LOADING MODEL" : S.status === "STOPPED" ? "NO MODEL LOADED" : S.status;
+  if (S.status === "STOPPED" && !S.props) setHTML("model", `no model loaded — start one on <a href="../server/" style="color:var(--cyan)">/server</a>`);
+  $("tachPanel").classList.toggle("hot", S.status === "GENERATING");
+}
+
+function renderProps() {
+  const p = S.props; if (!p) return;
+  const file = (p.model_path || "").split("/").pop();
+  setHTML("model", `<b>${p.model_alias || file || "model"}</b>${file && file !== p.model_alias ? " · " + file : ""}`);
+  document.title = `${p.model_alias || "llama.cpp"} · Inference Overdrive`;
+  setHTML("chipBuild", `build <b>${p.build_info || "--"}</b>`);
+  const ctx = p.default_generation_settings && p.default_generation_settings.n_ctx;
+  setHTML("chipCtx", `ctx <b>${isNum(ctx) ? (ctx >= 1024 ? Math.round(ctx / 1024) + "K" : ctx) : "--"}</b>`);
+  const mods = Object.entries(p.modalities || {}).filter(([, v]) => v).map(([k]) => k);
+  setHTML("chipMod", `<b>${["text", ...mods].join(" + ")}</b>`);
+  setText("slotTag", `${p.total_slots ?? "--"} TOTAL`);
+}
+
+function renderLlama() {
+  renderStatus();
+  const m = S.m;
+  setHTML("kGen", `${fk(m.tokens_predicted_total)}<small>tok</small>`);
+  setHTML("kPrompt", `${fk(m.prompt_tokens_total)}<small>tok</small>`);
+  // prompt_tokens_total counts only evaluated tokens; cache hits are counted separately
+  const cached = m.prompt_tokens_cached_total || 0, promptIn = (m.prompt_tokens_total || 0) + cached;
+  const cachedPct = promptIn > 0 ? ` <small>${(cached / promptIn * 100).toFixed(0)}% hit</small>` : "";
+  setHTML("kCached", `${fk(m.prompt_tokens_cached_total)}${cachedPct}`);
+  const vl = m.kind === "vllm";
+  const avgGen = m.tokens_predicted_seconds_total > 0 ? (vl ? m.gen_done_tokens : m.tokens_predicted_total) / m.tokens_predicted_seconds_total : null;
+  const avgPrompt = m.prompt_seconds_total > 0 ? (vl ? m.prompt_done_tokens : m.prompt_tokens_total) / m.prompt_seconds_total : null;
+  setHTML("kAvgGen", `${fx(avgGen)}<small>tok/s</small>`);
+  setHTML("kAvgPrompt", `${fx(avgPrompt)}<small>tok/s</small>`);
+  setText("kDecodes", fi(m.n_decode_total));
+  setText("kQueue", `${fi(m.requests_processing)} · ${fi(m.requests_deferred)}`);
+
+  setText("tPeak", fx(S.peak));
+  setText("tAvg", fx(avgGen));
+  setText("tLast", S.log[0] ? fx(S.log[0].genTps) : "--");
+
+  // speculative decoding: each draft round = one target verify pass that yields accepted + 1 tokens
+  const drafts = m.spec_decode_num_drafts_total || 0, drafted = m.spec_decode_num_draft_tokens_total || 0, acc = m.spec_decode_num_accepted_tokens_total || 0;
+  setHTML("sGain", `${drafts > 0 ? (acc / drafts + 1).toFixed(2) : "--"}<small>×</small>`);
+  setText("sAcc", drafted > 0 ? (acc / drafted * 100).toFixed(1) + "%" : "--");
+  setText("sDrafts", fi(drafts)); setText("sDrafted", fi(drafted)); setText("sAccepted", fi(acc));
+  renderFunnel(m.pos, drafts);
+  let sp = S.slots[0] && S.slots[0].params && S.slots[0].params["speculative.types"];
+  sp = sp ? sp.split(",").filter(x => x !== "none").join("+") || "off" : null;
+  if (m.kind === "vllm") {
+    const sc = S.server && S.server.config.vllm.values["--speculative-config"];
+    try { sp = sc ? JSON.parse(sc).method || "on" : "off"; } catch { sp = "on"; }
+  }
+  setHTML("chipSpec", `spec <b>${sp || "--"}</b>`);
+  setText("specTitle", sp && sp.includes("dflash") ? "DFlash2 speculation" : "Speculative decoding");
+  setText("chipBackend", m.kind === "vllm" ? "vLLM" : "llama.cpp");
+  setText("kDecodesLbl", m.kind === "vllm" ? "Requests done" : "Decode calls");
+  if (m.kind === "vllm") setText("kDecodes", fi(m.requests_done));
+
+  renderLanes();
+  setText("foot", `poll ${POLL} ms · ${S.slots.length} slot${S.slots.length === 1 ? "" : "s"} · updated ${new Date(S.lastOk).toLocaleTimeString()}`);
+}
+
+function renderLanes() {
+  const L = $("lanes");
+  if (S.m && S.m.kind === "vllm") {
+    const run = S.m.requests_processing || 0, wait = S.m.requests_deferred || 0, kv = S.m.kv_usage || 0;
+    setText("slotTag", "SCHEDULER");
+    setHTML("lanes", `<div class="lane${run ? " gen" : ""}">
+      <div class="lane-h"><span class="lbl">vLLM scheduler</span><span class="state">${run ? "GEN" : "IDLE"}</span></div>
+      <div class="lane-rate"><span class="num">${run ? fx(S.ema) : "--"}</span><span class="lbl">tok/s</span></div>
+      <div class="ctx"><i class="g" style="width:${(kv * 100).toFixed(1)}%"></i></div>
+      <div class="lane-f"><span>KV cache <b>${(kv * 100).toFixed(1)}%</b></span><span>running <b>${fi(run)}</b> · waiting <b>${fi(wait)}</b></span></div></div>`);
+    return;
+  }
+  if (!S.slots.length) { setHTML("lanes", `<div class="empty">/slots unavailable (enable the /slots endpoint on /server)</div>`); return; }
+  if (L.children.length !== S.slots.length || L.querySelector(".empty")) {
+    L.innerHTML = S.slots.map(s => `<div class="lane" data-id="${s.id}">
+      <div class="lane-h"><span class="lbl">Slot ${s.id}</span><span class="state">IDLE</span></div>
+      <div class="lane-rate"><span class="num">--</span><span class="lbl">tok/s</span></div>
+      <div class="ctx"><i class="p"></i><i class="g"></i></div>
+      <div class="lane-f"><span class="a"></span><span class="b"></span></div></div>`).join("");
+  }
+  S.slots.forEach((s, i) => {
+    const el = L.children[i], nt =(s.next_token && s.next_token[0]) || {};
+    const proc = !!s.is_processing, dec = nt.n_decoded || 0;
+    const state = !proc ? "IDLE" : dec > 0 ? "GEN" : "PREFILL";
+    el.className = "lane" + (state === "GEN" ? " gen" : state === "PREFILL" ? " pre" : "");
+    el.querySelector(".state").textContent = state;
+    const ctx = s.n_ctx || 1, prompt = s.n_prompt_tokens || 0;
+    const gen = proc ? dec : 0;
+    // n_prompt_tokens includes the previous turn's output once idle, so only split prompt/gen while processing
+    el.querySelector(".p").style.width = (Math.min(prompt, ctx) / ctx * 100).toFixed(2) + "%";
+    el.querySelector(".g").style.width = (Math.min(gen, ctx - Math.min(prompt, ctx)) / ctx * 100).toFixed(2) + "%";
+    const pre = state === "PREFILL" && prompt > 0 ? ` · prefill ${Math.round((s.n_prompt_tokens_processed || 0) / prompt * 100)}%` : "";
+    el.querySelector(".a").innerHTML = `<b>${fi(prompt + gen)}</b> / ${fi(ctx)} ctx${pre}`;
+    el.querySelector(".b").innerHTML = proc ? `+<b>${fi(dec)}</b> tok · task ${s.id_task}` : `task ${s.id_task ?? "--"}`;
+    // per-slot split is approximate with several busy slots; exact for one
+    el.querySelector(".lane-rate .num").textContent = proc && dec > 0 ? fx(S.ema / Math.max(1, S.slots.filter(x => x.is_processing).length)) : "--";
+  });
+}
+
+function renderLog() {
+  setText("reqTag", String(S.log.length));
+  $("reqEmpty").style.display = S.log.length ? "none" : "";
+  const best = Math.max(0, ...S.log.map(r => r.genTps || 0));
+  $("reqs").innerHTML = S.log.map(r => `<tr class="${r.fresh ? "new" : ""}">
+    <td>${r.t.toLocaleTimeString()}</td><td>${fi(r.prompt)}</td><td>${r.cached > 0 ? fi(r.cached) : "–"}</td><td>${fi(r.gen)}</td>
+    <td class="${r.genTps && r.genTps === best ? "hi" : ""}">${fx(r.genTps)}</td><td>${fx(r.promptTps)}</td>
+    <td><span class="acc" style="color:${r.acc == null ? "var(--dim)" : r.acc > .7 ? C.lime : r.acc > .45 ? C.amber : C.red}">${r.acc == null ? "–" : (r.acc * 100).toFixed(0) + "%"}</span></td>
+    <td>${r.wall != null ? dur(r.wall) : "–"}</td></tr>`).join("");
+  S.log.forEach(r => r.fresh = false);
+}
+
+function renderHW() {
+  const h = S.hw, gpus = h.gpus || [];
+  // one tab per card when there are several; the rings and details follow the picked card
+  S.gpuSel = Math.min(S.gpuSel || 0, Math.max(0, gpus.length - 1));
+  const tabs = $("gpuTabs");
+  if (gpus.length > 1) {
+    const html = gpus.map((x, i) => `<button class="gtab${i === S.gpuSel ? " on" : ""}" data-i="${i}" title="${(x.name || "").replace(/"/g, "")}">GPU ${x.index ?? i}</button>`).join("");
+    if (tabs.innerHTML !== html) {
+      tabs.innerHTML = html;
+      tabs.querySelectorAll("button").forEach(b => b.onclick = () => { S.gpuSel = +b.dataset.i; renderHW(); });
+    }
+  } else if (tabs.innerHTML) tabs.innerHTML = "";
+  setText("gpuLegend", gpus.length > 1 ? `GPU % (avg of ${gpus.length})` : "GPU %");
+  const g = gpus[S.gpuSel];
+  if (g) {
+    setText("gpuName", (g.name || "GPU").replace(/^NVIDIA\s+/, "").replace("GeForce ", ""));
+    setText("gpuPstate", g.pstate || "--");
+    setRing("rUtil", g.util / 100, isNum(g.util) ? g.util.toFixed(0) + "%" : "--", heatColor(g.util / 100));
+    const vf = g.vram_used / g.vram_total;
+    setRing("rVram", vf, isNum(vf) ? (vf * 100).toFixed(0) + "%" : "--", vf > .95 ? C.red : vf > .85 ? C.amber : C.cyan);
+    const pf = g.power / g.power_limit;
+    setRing("rPower", pf, isNum(g.power) ? g.power.toFixed(0) + "W" : "--", heatColor(pf));
+    setRing("rTemp", g.temp / 95, isNum(g.temp) ? g.temp.toFixed(0) + "°" : "--", g.temp > 83 ? C.red : g.temp > 72 ? C.amber : C.lime);
+    setText("gClk", isNum(g.clock_gpu) ? `${fi(g.clock_gpu)} / ${fi(g.clock_gpu_max)} MHz` : "--");
+    setText("gMclk", isNum(g.clock_mem) ? `${fi(g.clock_mem)} MHz` : "--");
+    setText("gVram", isNum(g.vram_used) ? `${(g.vram_used / 1024).toFixed(1)} / ${(g.vram_total / 1024).toFixed(1)} GB` : "--");
+    setText("gMemUtil", isNum(g.mem_util) ? g.mem_util.toFixed(0) + "%" : "--");
+    setText("gFan", isNum(g.fan) ? g.fan.toFixed(0) + "%" : "--");
+    setText("gPcie", isNum(g.pcie_gen) ? `Gen${g.pcie_gen} x${g.pcie_width}` : "--");
+    setText("gDrv", g.driver || "--");
+    setText("gPwr", isNum(g.power_limit) ? `${fx(g.power, 0)} / ${fx(g.power_limit, 0)} W` : "--");
+  } else {
+    setText("gpuName", "GPU · nvidia-smi unavailable");
+  }
+  const c = h.cpu || {};
+  setRing("rCpu", c.percent / 100, isNum(c.percent) ? c.percent.toFixed(0) + "%" : "--", heatColor(c.percent / 100));
+  setText("cpuFreq", isNum(c.freq) ? `${(c.freq / 1000).toFixed(2)} GHz` : "--");
+  setText("cpuCores", `${c.cores ?? "--"}C / ${c.threads ?? "--"}T`);
+  setText("load", c.load ? c.load.map(x => x.toFixed(2)).join(" ") : "--");
+  const cores = $("cores"), pc = c.per_core || [];
+  if (cores.children.length !== pc.length) cores.innerHTML = pc.map(() => "<i></i>").join("");
+  pc.forEach((v, i) => cores.children[i].style.height = Math.max(3, v) + "%");
+  const r = h.ram || {};
+  setText("ramTxt", `${gib(r.used)} / ${gib(r.total)} GB`);
+  $("ramBar").style.width = (r.percent || 0) + "%";
+  const d = h.disk;
+  if (d) { setText("diskLbl", `Disk ${d.path}`); setText("diskTxt", `${gib(d.used)} / ${gib(d.total)} GB`); $("diskBar").style.width = d.percent + "%"; }
+  const p = h.proc;
+  setText("pRss", p ? `${gib(p.rss)} GB` : "--");
+  setText("pCpu", p && isNum(p.cpu) ? p.cpu.toFixed(0) + "%" : "--");
+  setText("pThr", p ? String(p.threads) : "--");
+  setText("pUp", p ? dur(p.uptime) : "--");
+  setText("sysTag", h.error ? "sampler error" : "1 s");
+}
+
+// ── animation loop: gauge easing + scrolling chart ──────────────────────
+const cv = $("chart"), cx = cv.getContext("2d");
+function sizeCanvas() {
+  const dpr = devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
+  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+  cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return [w, h];
+}
+function niceMax(v) { const s = [10, 20, 30, 40, 60, 80, 100, 120, 160, 200, 300, 400, 600, 800, 1000]; return s.find(x => x >= v) || Math.ceil(v / 500) * 500; }
+
+function drawChart() {
+  const [W, H] = sizeCanvas();
+  cx.clearRect(0, 0, W, H);
+  const L = 40, R = 40, T = 8, B = 22, w = W - L - R, h = H - T - B;
+  const now = Date.now(), t0 = now - WINDOW;
+  const X = t => L + (t - t0) / WINDOW * w;
+  const vis = S.gen.filter(p => p.t >= t0 - 2000);
+  const ymax = niceMax(Math.max(10, ...vis.map(p => p.v)) * 1.15);
+  const Y = v => T + h - clamp(v / ymax, 0, 1) * h;
+  const YG = v => T + h - clamp(v / 100, 0, 1) * h;
+
+  cx.font = "600 10px " + getComputedStyle(document.body).getPropertyValue("--mono");
+  cx.textBaseline = "middle";
+  for (let i = 0; i <= 4; i++) {
+    const y = T + h * (1 - i / 4);
+    cx.strokeStyle = i ? "#141b26" : "#1f2836"; cx.lineWidth = 1;
+    cx.beginPath(); cx.moveTo(L, Math.round(y) + .5); cx.lineTo(L + w, Math.round(y) + .5); cx.stroke();
+    cx.fillStyle = "#56647a"; cx.textAlign = "right"; cx.fillText(Math.round(ymax * i / 4), L - 8, y);
+    cx.fillStyle = "#7a5a1e"; cx.textAlign = "left"; cx.fillText(i * 25 + "%", L + w + 8, y);
+  }
+  cx.textAlign = "center"; cx.fillStyle = "#56647a";
+  for (let s = 0; s <= 120; s += 30) cx.fillText(s ? `-${s}s` : "now", X(now - s * 1000), H - 8);
+
+  // GPU util area
+  const gp = S.gpu.filter(p => p.t >= t0 - 2000 && isNum(p.v));
+  if (gp.length > 1) {
+    cx.beginPath(); gp.forEach((p, i) => i ? cx.lineTo(X(p.t), YG(p.v)) : cx.moveTo(X(p.t), YG(p.v)));
+    cx.strokeStyle = "rgba(255,178,36,.55)"; cx.lineWidth = 1.2; cx.stroke();
+    cx.lineTo(X(gp[gp.length - 1].t), T + h); cx.lineTo(X(gp[0].t), T + h); cx.closePath();
+    cx.fillStyle = "rgba(255,178,36,.07)"; cx.fill();
+  }
+  // request markers
+  cx.fillStyle = C.violet;
+  for (const t of S.marks) if (t >= t0) { const x = X(t); cx.fillRect(x - 1, T + h - 10, 2, 10); cx.beginPath(); cx.arc(x, T + h - 12, 2.5, 0, 7); cx.fill(); }
+  // gen tok/s
+  if (vis.length > 1) {
+    cx.save(); cx.beginPath(); cx.rect(L, T - 4, w + 1, h + 8); cx.clip();
+    const grad = cx.createLinearGradient(0, T, 0, T + h);
+    grad.addColorStop(0, "rgba(166,255,61,.28)"); grad.addColorStop(1, "rgba(166,255,61,0)");
+    cx.beginPath(); vis.forEach((p, i) => i ? cx.lineTo(X(p.t), Y(p.v)) : cx.moveTo(X(p.t), Y(p.v)));
+    const last = vis[vis.length - 1];
+    cx.lineTo(X(last.t), T + h); cx.lineTo(X(vis[0].t), T + h); cx.closePath(); cx.fillStyle = grad; cx.fill();
+    cx.beginPath(); vis.forEach((p, i) => i ? cx.lineTo(X(p.t), Y(p.v)) : cx.moveTo(X(p.t), Y(p.v)));
+    cx.strokeStyle = C.lime; cx.lineWidth = 2; cx.lineJoin = "round"; cx.shadowColor = "rgba(166,255,61,.7)"; cx.shadowBlur = 10; cx.stroke();
+    cx.shadowBlur = 0;
+    const lx = X(last.t), ly = Y(last.v), pulse = 3 + 2 * Math.abs(Math.sin(now / 300));
+    cx.fillStyle = C.lime; cx.beginPath(); cx.arc(lx, ly, 3, 0, 7); cx.fill();
+    cx.strokeStyle = "rgba(166,255,61,.4)"; cx.beginPath(); cx.arc(lx, ly, 3 + pulse, 0, 7); cx.stroke();
+    if (last.v > .5) { cx.fillStyle = C.lime; cx.textAlign = "right"; cx.fillText(last.v.toFixed(1) + " tok/s", Math.min(lx - 10, L + w), Math.max(T + 8, ly - 14)); }
+    cx.restore();
+  }
+}
+
+function frame() {
+  // ease the needle toward the smoothed live rate
+  S.shown += (S.ema - S.shown) * .12;
+  if (Math.abs(S.ema - S.shown) < .01) S.shown = S.ema;
+  rescale();
+  const frac = clamp(S.shown / S.scaleMax, 0, 1);
+  document.documentElement.style.setProperty("--heat", frac.toFixed(3));
+  // gap of 200 so the dash never repeats; hide at zero (round caps would draw dots)
+  $("gVal").setAttribute("stroke-dasharray", `${(frac * 100).toFixed(2)} 200`);
+  $("gVal").style.opacity = frac > .002 ? 1 : 0;
+  $("gNeedle").setAttribute("transform", `rotate(${ang(S.shown).toFixed(2)} ${GX} ${GY})`);
+  const txt = S.shown.toFixed(1); if ($("gValue").textContent !== txt) $("gValue").textContent = txt;
+  if (S.peak > 0) {
+    const a = ang(S.peak), [x0, y0] = pt(GR + 12, a), [x1, y1] = pt(GR + 20, a - 3), [x2, y2] = pt(GR + 20, a + 3);
+    $("gPeak").setAttribute("d", `M${x0.toFixed(1)} ${y0.toFixed(1)}L${x1.toFixed(1)} ${y1.toFixed(1)}L${x2.toFixed(1)} ${y2.toFixed(1)}Z`);
+  }
+  drawChart();
+  requestAnimationFrame(frame);
+}
+
+pollProps();
+pollLlama(); setInterval(pollLlama, POLL);
+pollHW(); setInterval(pollHW, HW_POLL);
+pollServer(); setInterval(pollServer, 3000);
+setInterval(pollProps, 15000);
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

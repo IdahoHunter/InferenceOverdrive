@@ -1,0 +1,48 @@
+# Secrets and local config — .env.example is the committed template
+.env
+.env.*
+!.env.example
+# local compose overrides (often carry tokens / host paths)
+docker-compose.override.yml
+docker-compose.override.yaml
+compose.override.yml
+compose.override.yaml
+
+# Runtime data, bind-mounted into the containers
+# models/: GGUFs + the Hugging Face hub cache; state/: server.json, hf_token,
+# chat templates, boot/update records, --help catalog cache
+models/
+state/
+
+# Model weights anywhere else
+*.gguf
+*.safetensors
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+build/
+dist/
+
+# Tooling caches
+.cache/
+.omc/
+
+# Logs, scratch and merge leftovers
+*.log
+*.tmp
+*.bak
+*.orig
+*.rej
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db

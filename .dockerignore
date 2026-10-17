@@ -1,0 +1,16 @@
+# Allowlist: the image only COPYs from docker/ and python/ (llama.cpp comes
+# from git in the Dockerfile), so send nothing else to the builder. This keeps
+# models/ (tens of GB), state/ (hf_token, server.json) and .env out of the
+# build context for good. A new COPY from elsewhere needs a "!path" line here.
+*
+!docker/
+!python/
+
+# ...and nothing generated inside those
+**/__pycache__/
+**/*.py[cod]
+**/.ruff_cache/
+**/.pytest_cache/
+**/*.log
+**/*.swp
+**/.DS_Store

@@ -1,0 +1,78 @@
+# Compose project name: names the network (inference-overdrive_default) 
+# Open WebUI volume (inference-overdrive_open-webui-data) 
+name: inference-overdrive
+
+services:
+  # The LLM server: llama.cpp or vLLM (chosen on /server) behind nginx.
+  llm-server:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        CUDA_ARCH: ${CUDA_ARCH:-86}
+        GGML_CUDA_NCCL: ${GGML_CUDA_NCCL:-ON}
+        BUILD_JOBS: ${BUILD_JOBS:-8}
+        LLAMA_CPP_REF: ${LLAMA_CPP_REF:-master}
+        VLLM_VERSION: ${VLLM_VERSION:-0.31.0}
+    image: inference-overdrive-llm-server:cuda13.4.2
+    container_name: inference-overdrive-llm-server
+    # Reaps the nginx / hw-metrics sidecars that entrypoint.sh backgrounds.
+    init: true
+    ports:
+      # OpenAI API, /monitor/ and /server/ (backend + model control).
+      # LLAMA_PORT is the old name of LLM_PORT and still works.
+      - "${LLM_PORT:-${LLAMA_PORT:-8888}}:8888"
+    volumes:
+      # Writable: /server downloads and deletes models here.
+      - ./models:/models
+      # /server settings (server.json); survives image rebuilds.
+      - ./state:/state
+    # Docker Desktop's GPU support injects the host driver (libcuda,
+    # nvidia-smi) and /dev/dxg at runtime. Every card is passed in; pick which
+    # ones each backend uses on /server (Multi-GPU → GPUs).
+    gpus: all
+    # No model is configured here: the container comes up healthy with just
+    # /monitor and /server, and starts a model only if .env sets AUTOSTART=1
+    # (with BACKEND + TARGET_FILE / VLLM_MODEL) or a boot default is saved on
+    # /server. The env below seeds state/server.json on the first start.
+    # Healthcheck is defined in docker/Dockerfile.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # for the Chat links on /monitor and /server (Open WebUI's host port)
+      WEBUI_PORT: ${WEBUI_PORT:-3000}
+      # vLLM turns pinned host memory off under WSL2 unless told otherwise; pinned
+      # (page-locked) buffers make host<->GPU copies faster. Set 0 in .env to disable.
+      VLLM_WSL2_ENABLE_PIN_MEMORY: ${VLLM_WSL2_ENABLE_PIN_MEMORY:-1}
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    # vLLM moves tensors between its API and engine processes through /dev/shm.
+    shm_size: "8gb"
+    # Lets the manager stop the backend cleanly (vLLM can take a while).
+    stop_grace_period: 60s
+    restart: unless-stopped
+
+  # The chat UI for both backends (the Chat link). Starts with `docker compose up -d`;
+  # it waits for llm-server to be healthy, which doesn't need a model loaded.
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: inference-overdrive-open-webui
+    ports:
+      # Open WebUI itself listens on 8080 inside its container.
+      - "${WEBUI_PORT:-3000}:8080"
+    environment:
+      OPENAI_API_BASE_URL: http://llm-server:8888/v1
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-sk-local}
+      ENABLE_OLLAMA_API: "false"
+      WEBUI_AUTH: "false"
+      WEBUI_NAME: Inference Overdrive
+    volumes:
+      - open-webui-data:/app/backend/data
+    depends_on:
+      llm-server:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  open-webui-data:
