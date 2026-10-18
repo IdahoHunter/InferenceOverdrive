@@ -15,6 +15,13 @@ API (nginx maps /server/api/* to /api/*). When SERVER_ADMIN_TOKEN is set,
 every non-GET request needs `Authorization: Bearer <token>`.
   GET    /api/state                     backend status, config, versions
   GET    /api/health                    200 whenever this API answers (a running model is optional)
+  GET    /api/vllm/envs                 vLLM installs: the image's + upgrades under /state/envs, the selected one
+  POST   /api/vllm/install              {version}: install vLLM into /state/envs/vllm-<version>, check it, select it
+  POST   /api/vllm/install/cancel       stop that install (the half-made env is removed)
+  PUT    /api/vllm/env                  {name}: use that env from the next vLLM start (null = the image's: rollback)
+  DELETE /api/vllm/envs/<name>          remove an env that isn't selected
+  POST   /api/manager/restart           re-exec this manager (picks up a new manager.py); the backend keeps
+                                        running and is adopted from /state/backend.json
   PUT    /api/boot, DELETE /api/boot    save / clear the backend + settings started with the container
   GET|PUT|DELETE /api/hf/token          Hugging Face token status / save (validated) / remove
   GET    /api/templates                 saved chat templates (/state/templates/*.jinja)
@@ -480,7 +487,7 @@ def build_argv(backend, cfg):
         target = model if is_repo else models_path(model) if os.path.exists(local) else None
         if not target:
             raise ValueError(f"{model!r} is neither a Hugging Face repo id nor a folder under {MODELS_DIR}")
-        argv = [VLLM_BIN, "serve", target, "--host", BACKEND_HOST, "--port", str(BACKEND_PORT)]
+        argv = [vllm_bin(), "serve", target, "--host", BACKEND_HOST, "--port", str(BACKEND_PORT)]
         if not values.get("--served-model-name"):
             argv += ["--served-model-name", os.path.basename(model.rstrip("/")).replace("--", "/", 1)
                      if model.startswith("hf/") else model]
@@ -569,6 +576,10 @@ def backend_env(backend, extra=None):
     env.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
     env.update(extra or {})
     if backend == "vllm":
+        venv = vllm_env()
+        if venv:  # an upgraded vLLM from /state/envs: its own python / console scripts first
+            env["VIRTUAL_ENV"] = venv
+            env["PATH"] = os.path.join(venv, "bin") + ":" + env.get("PATH", os.environ.get("PATH", ""))
         env.setdefault("VLLM_NO_USAGE_STATS", "1")
         env.setdefault("DO_NOT_TRACK", "1")
         # torch.compile artifacts and FlashInfer/Triton JIT kernels take minutes to build the first
@@ -582,6 +593,80 @@ def backend_env(backend, extra=None):
 
 
 # ── backend process ───────────────────────────────────────────────────────
+# The running engine survives a manager restart (POST /api/manager/restart re-executes this file
+# in place with os.execv, so the PID and the engine's parent stay the same): it is recorded in
+# BACKEND_RECORD while it runs and writes its output to BACKEND_LOG instead of a pipe, and the
+# new manager adopts it from there instead of running the boot plan.
+BACKEND_RECORD = os.path.join(STATE_DIR, "backend.json")
+BACKEND_LOG = os.path.join(STATE_DIR, "logs", "backend.log")
+MANAGER_STARTED_AT = time.time()
+ADOPT_LOG_BYTES = 512 * 1024  # how much of the engine's log an adopting manager reloads
+
+
+def proc_starttime(pid):
+    """Start time of a live, non-zombie process (clock ticks since boot, /proc/<pid>/stat field 22);
+    None if there is none. pid + start time identify a process across PID reuse."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            fields = f.read().rsplit(")", 1)[1].split()
+    except (OSError, IndexError):
+        return None
+    return None if fields[0] in ("Z", "X") else int(fields[19])
+
+
+def reap_inherited(keep=()):
+    """After an os.execv restart, children the previous manager had in flight (a --help probe, the
+    parser registry check, hw-metrics from the entrypoint) are still ours but nothing waits for them:
+    wait for each in a thread so they don't linger as zombies. Call before spawning anything."""
+    me = str(os.getpid())
+    for d in os.listdir("/proc"):
+        if not d.isdigit() or int(d) in keep:
+            continue
+        try:
+            with open(f"/proc/{d}/stat") as f:
+                ppid = f.read().rsplit(")", 1)[1].split()[1]
+        except (OSError, IndexError):
+            continue
+        if ppid == me:
+            threading.Thread(target=lambda pid=int(d): _waitpid_quiet(pid), daemon=True).start()
+
+
+def _waitpid_quiet(pid):
+    try:
+        os.waitpid(pid, 0)
+    except ChildProcessError:
+        pass
+
+
+class AdoptedProc:
+    """The Popen-like handle (pid, poll, wait, returncode) for an engine the manager adopted after an
+    os.execv restart. It is still this process's child, so waitpid reaps it and gets its exit code."""
+
+    def __init__(self, pid):
+        self.pid, self.returncode = pid, None
+        self._lock = threading.Lock()
+
+    def poll(self):
+        with self._lock:
+            if self.returncode is None:
+                try:
+                    pid, status = os.waitpid(self.pid, os.WNOHANG)
+                    if pid:
+                        self.returncode = os.waitstatus_to_exitcode(status)
+                except ChildProcessError:  # not our child after all: all we can tell is that it's gone
+                    if proc_starttime(self.pid) is None:
+                        self.returncode = -1
+            return self.returncode
+
+    def wait(self, timeout=None):
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while self.poll() is None:
+            if deadline is not None and time.monotonic() > deadline:
+                raise subprocess.TimeoutExpired(f"pid {self.pid}", timeout)
+            time.sleep(0.1)
+        return self.returncode
+
+
 class Backend:
     def __init__(self):
         self.lock = threading.RLock()
@@ -595,7 +680,9 @@ class Backend:
         self.error = None
         self.logs = deque(maxlen=5000)
         self.seq = 0
+        self.log_id = uuid.uuid4().hex[:8]  # changes with each manager (re)start, so the page reloads its log view
         self.listener = None  # called with ("ready"|"failed", error) for the current process (boot guard)
+        self.meta = {}  # kept in BACKEND_RECORD for whoever adopts this process (e.g. which boot plan started it)
 
     def log(self, line, echo=True, tag=None):
         with self.lock:
@@ -607,33 +694,123 @@ class Backend:
     def alive(self):
         return self.proc is not None and self.proc.poll() is None
 
-    def start(self, kind, argv, extra_env=None, listener=None):
+    def start(self, kind, argv, extra_env=None, listener=None, meta=None):
         with self.lock:
             if self.alive():
                 raise RuntimeError("backend already running")
-            self.kind, self.argv, self.listener = kind, argv, listener
+            self.kind, self.argv, self.listener, self.meta = kind, argv, listener, dict(meta or {})
             self.state, self.intent = "starting", "running"
             self.started_at, self.ready_at = time.time(), None
             self.exit_code = self.error = None
             prefix = "".join(f"{k}={v} " for k, v in (extra_env or {}).items())
-            self.log("$ " + prefix + shlex.join(argv), tag="server")
+            env = backend_env(kind, extra_env)
+            env.setdefault("PYTHONUNBUFFERED", "1")  # vLLM's output goes to a file now, not a pipe: no block buffering
             try:
-                self.proc = subprocess.Popen(
-                    argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                    env=backend_env(kind, extra_env), start_new_session=True, text=True, bufsize=1, errors="replace",
-                )
+                os.makedirs(os.path.dirname(BACKEND_LOG), exist_ok=True)
+                try:
+                    os.unlink(BACKEND_LOG)  # a fresh file (inode), so a tailer of the last run never reads this one
+                except FileNotFoundError:
+                    pass
+                with open(BACKEND_LOG, "wb") as out:
+                    # the command line goes in the file too, so an adopting manager shows it
+                    out.write(("$ " + prefix + shlex.join(argv) + "\n").encode())
+                    out.flush()
+                    self.proc = subprocess.Popen(argv, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                                 env=env, start_new_session=True)
             except OSError as e:
+                self.log("$ " + prefix + shlex.join(argv), tag="server")
                 self.state, self.error = "failed", str(e)
                 self.log(f"failed to start: {e}", tag="server")
                 self._notify("failed", str(e))
                 return
             proc = self.proc
-        threading.Thread(target=self._pump, args=(proc,), daemon=True).start()
+            self._save_record()
+        threading.Thread(target=self._tail, args=(proc,), daemon=True).start()
         threading.Thread(target=self._watch, args=(proc,), daemon=True).start()
 
-    def _pump(self, proc):
-        for line in proc.stdout:
-            self.log(line.rstrip("\n"))
+    def adopt(self, listener=None):
+        """Manager start: take over the engine BACKEND_RECORD names if it is still the same live process
+        (pid + start time match). Returns the record, or None (nothing to adopt; a stale record is removed)."""
+        rec = _read_json(BACKEND_RECORD)
+        if not rec:
+            return None
+        pid = rec.get("pid")
+        if not isinstance(pid, int) or rec.get("kind") not in BACKENDS or proc_starttime(pid) != rec.get("starttime"):
+            self.log(f"not adopting the {rec.get('kind')} recorded in {BACKEND_RECORD} (pid {pid}): "
+                     "that process is gone", tag="server")
+            self._clear_record()
+            return None
+        with self.lock:
+            self.proc = AdoptedProc(pid)
+            self.kind, self.argv, self.listener, self.meta = rec["kind"], rec.get("argv"), listener, rec.get("meta") or {}
+            self.started_at, self.ready_at = rec.get("started_at"), rec.get("ready_at")
+            # still loading → the /health polling in _watch takes it to running, as for a fresh start
+            self.state, self.intent = ("running" if self.ready_at else "starting"), "running"
+            self.exit_code = self.error = None
+            proc = self.proc
+        try:
+            offset = max(0, os.path.getsize(BACKEND_LOG) - ADOPT_LOG_BYTES)
+        except OSError:
+            offset = 0
+        self.log(f"adopted the running {self.kind} (pid {pid}, {self.state}) after a manager restart", tag="server")
+        threading.Thread(target=self._tail, args=(proc, offset, True), daemon=True).start()
+        threading.Thread(target=self._watch, args=(proc,), daemon=True).start()
+        return rec
+
+    def _save_record(self):
+        proc = self.proc
+        rec = {"kind": self.kind, "pid": proc.pid, "starttime": proc_starttime(proc.pid), "argv": self.argv,
+               "started_at": self.started_at, "ready_at": self.ready_at, "log": BACKEND_LOG, "meta": self.meta}
+        try:
+            with open(BACKEND_RECORD + ".tmp", "w") as f:
+                json.dump(rec, f)
+            os.replace(BACKEND_RECORD + ".tmp", BACKEND_RECORD)
+        except OSError as e:
+            self.log(f"cannot write {BACKEND_RECORD}: {e} (a manager restart won't find this backend)", tag="server")
+
+    @staticmethod
+    def _clear_record():
+        try:
+            os.remove(BACKEND_RECORD)
+        except OSError:
+            pass
+
+    def _tail(self, proc, offset=0, replay=False):
+        """Engine output → the log buffer, following BACKEND_LOG like `tail -f` until the process is gone.
+        \\r (progress bars) ends a line too, as the text-mode pipe this replaces did."""
+        try:
+            f = open(BACKEND_LOG, "rb")
+        except OSError as e:
+            self.log(f"cannot read {BACKEND_LOG}: {e}", tag="server")
+            return
+        with f:
+            # an adopting manager reloads what is already in the file: into the page's log, but not
+            # printed to `docker logs` a second time
+            replay_end = os.fstat(f.fileno()).st_size if replay else 0
+            f.seek(offset)
+            if offset:
+                f.readline()  # started mid-file: skip the partial line
+            buf, done, pos = b"", False, f.tell()  # pos: file offset where buf starts
+            while True:
+                chunk = f.read(65536)
+                if chunk:
+                    buf += chunk
+                    cut = len(buf) - 1 if buf.endswith(b"\r") else len(buf)  # \r\n may be split across reads
+                    data, start = buf[:cut], 0
+                    for sep in re.finditer(rb"\r\n|\r|\n", data):
+                        self.log(data[start:sep.start()].decode(errors="replace"), echo=pos + sep.end() > replay_end)
+                        start = sep.end()
+                    pos += start
+                    buf = data[start:] + buf[cut:]
+                    continue
+                if done:
+                    break
+                # one more read after the process is gone, for what it wrote just before exiting
+                done = proc.poll() is not None or self.proc is not proc
+                if not done:
+                    time.sleep(0.25)
+            if buf.strip(b"\r"):
+                self.log(buf.strip(b"\r").decode(errors="replace"))
 
     def _watch(self, proc):
         while proc.poll() is None:
@@ -643,12 +820,14 @@ class Backend:
                     if ready:
                         self.state, self.ready_at = "running", time.time()
                         self.log(f"{self.kind} ready after {self.ready_at - self.started_at:.0f}s", tag="server")
+                        self._save_record()
                 if ready:
                     self._notify("ready")
             time.sleep(1)
         with self.lock:
             if self.proc is not proc:
                 return
+            self._clear_record()
             self.exit_code = proc.returncode
             failed = self.intent != "stopped"
             if not failed:
@@ -687,6 +866,8 @@ class Backend:
             pass
         with self.lock:
             self.state, self.exit_code = "stopped", proc.returncode
+            if self.proc is proc:
+                self._clear_record()
         # vLLM's engine core can outlive the API process for a moment; let its VRAM go first.
         for _ in range(20):
             try:
@@ -799,7 +980,7 @@ def catalog(backend, block=True):
     with _catalog_lock:
         if backend in _catalog_cache:
             return _catalog_cache[backend]
-        argv = [LLAMA_BIN, "--help"] if backend == "llama.cpp" else [VLLM_BIN, "serve", "--help=all"]
+        argv = [LLAMA_BIN, "--help"] if backend == "llama.cpp" else [vllm_bin(), "serve", "--help=all"]
         res = subprocess.run(argv, capture_output=True, text=True, timeout=180, env=backend_env(backend))
         flags = parse_help(res.stdout or res.stderr)
         if flags:
@@ -922,8 +1103,8 @@ def check_updates():
         have, new = _ver_tuple(v.get("vllm")), _ver_tuple(latest)
         out["vllm"] = {"latest": latest, "installed": v.get("vllm"), "url": f"https://github.com/vllm-project/vllm/releases/tag/v{latest}",
                        "available": bool(have and new and new > have),
-                       "how": f"set VLLM_VERSION={latest} in .env, then: docker compose build llm-server && docker compose up -d "
-                              "(check its torch / CUDA requirement against TORCH_INDEX_URL first)"}
+                       "how": "Upgrade in the vLLM card's gear menu (installs into state/envs, no rebuild), or set "
+                              f"VLLM_VERSION={latest} in .env, then: docker compose build llm-server && docker compose up -d"}
     except Exception as e:
         out["vllm"] = {"error": str(e)[:200]}
     try:
@@ -948,7 +1129,7 @@ _versions = {}
 
 
 def versions():
-    if not _versions:
+    if "llama.cpp" not in _versions:
         try:
             out = subprocess.run([LLAMA_BIN, "--version"], capture_output=True, text=True, timeout=30)
             text = out.stdout + out.stderr
@@ -957,12 +1138,248 @@ def versions():
             _versions["llama.cpp"] = f"{m.group(1)} · {m.group(2)}" if m else None
         except Exception:
             _versions["llama.cpp"] = None
-        try:
-            from importlib.metadata import version
-            _versions["vllm"] = version("vllm")
-        except Exception:
-            _versions["vllm"] = None
+    if "vllm" not in _versions:  # dropped when another vLLM env is selected
+        _versions["vllm"] = env_vllm_version(vllm_env())
     return _versions
+
+
+# ── vLLM environments: upgrade without a rebuild ──────────────────────────
+# The image's vLLM lives in /opt/venv. An upgrade from /server installs another vLLM into its own
+# venv under /state/envs/vllm-<version> (a full, separate install: torch and all, ~15 GB, so the
+# image's copy stays untouched for rollback), checks it, and selects it in /state/vllm_env.json.
+# Every vLLM call (serve, --help, parser registry, version) goes through the selected env.
+IMAGE_VENV = os.environ.get("IMAGE_VENV", "/opt/venv")
+VLLM_ENVS_DIR = os.path.join(STATE_DIR, "envs")
+VLLM_ENV_SELECT = os.path.join(STATE_DIR, "vllm_env.json")
+# same indexes as docker/Dockerfile: the CUDA 13.0 torch build and FlashInfer's prebuilt kernels
+TORCH_INDEX_URL = os.environ.get("TORCH_INDEX_URL", "https://download.pytorch.org/whl/cu130")
+FLASHINFER_INDEX_URL = os.environ.get("FLASHINFER_INDEX_URL", "https://flashinfer.ai/whl/")
+VLLM_ENV_MIN_FREE = 20 * 1024**3
+_vllm_env = {"loaded": False, "dir": None}
+
+
+def vllm_env():
+    """The selected vLLM env's directory, or None for the image's own vLLM. A selection whose env
+    is gone or incomplete falls back to the image's copy."""
+    if not _vllm_env["loaded"]:
+        name = (_read_json(VLLM_ENV_SELECT) or {}).get("active")
+        d = os.path.join(VLLM_ENVS_DIR, name) if name else None
+        if d and not _env_ok(d):
+            print(f"[server] vLLM env {name} is missing or failed its check; using the image's vLLM", flush=True)
+            d = None
+        _vllm_env.update(loaded=True, dir=d)
+    return _vllm_env["dir"]
+
+
+def _env_ok(d):
+    return os.path.isfile(os.path.join(d, "bin", "vllm")) and (_read_json(os.path.join(d, ".io-env.json")) or {}).get("ok")
+
+
+def vllm_bin():
+    d = vllm_env()
+    return os.path.join(d, "bin", "vllm") if d else VLLM_BIN
+
+
+def vllm_python():
+    d = vllm_env()
+    return os.path.join(d, "bin", "python") if d else sys.executable
+
+
+def env_vllm_version(d):
+    """vLLM version in env d (None = the image's, which is this manager's own venv)."""
+    try:
+        if not d:
+            from importlib.metadata import version
+            return version("vllm")
+        out = subprocess.run([os.path.join(d, "bin", "python"), "-c",
+                              "import importlib.metadata as m; print(m.version('vllm'))"],
+                             capture_output=True, text=True, timeout=60)
+        return out.stdout.strip() or None
+    except Exception:
+        return None
+
+
+def select_vllm_env(name):
+    """Use env `name` (None = the image's vLLM) from the next vLLM start on."""
+    d = os.path.join(VLLM_ENVS_DIR, name) if name else None
+    if d and not _env_ok(d):
+        raise ValueError(f"{name} is not an installed, checked vLLM env")
+    os.makedirs(STATE_DIR, exist_ok=True)
+    with open(VLLM_ENV_SELECT + ".tmp", "w") as f:
+        json.dump({"active": name, "at": time.time()}, f)
+    os.replace(VLLM_ENV_SELECT + ".tmp", VLLM_ENV_SELECT)
+    _vllm_env.update(loaded=True, dir=d)
+    # everything derived from the installed vLLM
+    _versions.pop("vllm", None)
+    _catalog_cache.pop("vllm", None)
+    _parsers.clear()
+    threading.Thread(target=vllm_parsers, daemon=True).start()
+
+
+class VllmEnvs:
+    """Install / check / select / remove vLLM envs under /state/envs (one install at a time)."""
+    STEPS = ("venv", "pip", "vllm", "flashinfer", "check")
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.job = None  # {version, name, step, status: installing|done|failed|cancelled, error, tail, ...}
+        self.proc = None
+
+    def running(self):
+        return bool(self.job and self.job["status"] == "installing")
+
+    def list(self):
+        active = vllm_env()
+        envs = [{"name": None, "version": env_vllm_version(None), "label": "image", "active": active is None, "ok": True}]
+        try:
+            names = sorted(os.listdir(VLLM_ENVS_DIR))
+        except OSError:
+            names = []
+        for n in names:
+            d = os.path.join(VLLM_ENVS_DIR, n)
+            if not os.path.isdir(d) or (self.running() and self.job["name"] == n):
+                continue
+            meta = _read_json(os.path.join(d, ".io-env.json")) or {}
+            envs.append({"name": n, "version": meta.get("vllm"), "label": n, "active": active == d, "ok": bool(meta.get("ok")),
+                         "torch": meta.get("torch"), "cuda": meta.get("cuda"), "flashinfer": meta.get("flashinfer"),
+                         "installed_at": meta.get("installed_at"), "error": meta.get("error")})
+        job = {k: (list(v) if isinstance(v, deque) else v) for k, v in self.job.items()} if self.job else None
+        return {"envs": envs, "job": job, "dir": VLLM_ENVS_DIR}
+
+    def install(self, version):
+        version = (version or "").strip()
+        if not re.fullmatch(r"\d+\.\d+(\.\d+)?((\.post|rc|\.dev)\d+)?", version):
+            raise ValueError("version must look like 0.32.0")
+        with self.lock:
+            if self.running():
+                raise RuntimeError(f"already installing vLLM {self.job['version']}")
+            name = f"vllm-{version}"
+            d = os.path.join(VLLM_ENVS_DIR, name)
+            if _env_ok(d):
+                select_vllm_env(name)
+                self.job = {"version": version, "name": name, "status": "done", "step": "check", "error": None,
+                            "tail": deque([f"{name} is already installed and checked; selected it"], maxlen=40),
+                            "started": time.time(), "finished": time.time(), "switched": True}
+                return self.list()
+            os.makedirs(VLLM_ENVS_DIR, exist_ok=True)
+            free = shutil.disk_usage(VLLM_ENVS_DIR).free
+            if free < VLLM_ENV_MIN_FREE:
+                raise RuntimeError(f"only {free / 1024**3:.0f} GB free under {VLLM_ENVS_DIR}; a vLLM env needs about "
+                                   f"{VLLM_ENV_MIN_FREE / 1024**3:.0f} GB")
+            self.job = {"version": version, "name": name, "status": "installing", "step": None, "error": None,
+                        "tail": deque(maxlen=40), "started": time.time(), "finished": None, "switched": False}
+        threading.Thread(target=self._run, args=(self.job, d), daemon=True).start()
+        return self.list()
+
+    def _step(self, job, name, argv, log, env=None, timeout=None):
+        job["step"] = name
+        job["tail"].append(f"$ {shlex.join(argv)}")
+        log.write(f"\n$ {shlex.join(argv)}\n")
+        log.flush()
+        self.proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                     text=True, errors="replace", env=env, start_new_session=True)
+        deadline = time.time() + timeout if timeout else None
+        for line in self.proc.stdout:
+            log.write(line)
+            line = line.rstrip()
+            if line:
+                job["tail"].append(line)
+            if deadline and time.time() > deadline:
+                os.killpg(self.proc.pid, signal.SIGKILL)
+        code = self.proc.wait()
+        if job["status"] == "cancelled":
+            raise RuntimeError("cancelled")
+        if code != 0:
+            raise RuntimeError(f"{name} step failed (exit code {code})")
+
+    def _run(self, job, d):
+        os.makedirs(VLLM_ENVS_DIR, exist_ok=True)
+        log_path = d + ".log"
+        meta_path = os.path.join(d, ".io-env.json")
+        py, pip = os.path.join(d, "bin", "python"), [os.path.join(d, "bin", "python"), "-m", "pip"]
+        env = dict(os.environ, PIP_DISABLE_PIP_VERSION_CHECK="1", PIP_NO_CACHE_DIR="1", PYTHONUNBUFFERED="1",
+                   VIRTUAL_ENV=d, PATH=os.path.join(d, "bin") + ":" + os.environ.get("PATH", ""))
+        env.pop("PYTHONHOME", None)
+        try:
+            with open(log_path, "w") as log:
+                shutil.rmtree(d, ignore_errors=True)  # a half-finished earlier attempt
+                # the system python (not this venv's) as the base, like /opt/venv itself
+                base = "/usr/bin/python3" if os.path.exists("/usr/bin/python3") else sys.executable
+                self._step(job, "venv", [base, "-m", "venv", d], log, env)
+                self._step(job, "pip", [*pip, "install", "--upgrade", "pip"], log, env, 600)
+                self._step(job, "vllm", [*pip, "install", "--extra-index-url", TORCH_INDEX_URL,
+                                         "--extra-index-url", FLASHINFER_INDEX_URL, f"vllm=={job['version']}"], log, env, 3600)
+                # FlashInfer's prebuilt kernels must match the flashinfer-python vLLM pulled in; without
+                # them it JIT-compiles on first use (slower first load, still works)
+                fi = subprocess.run([py, "-c", "import importlib.metadata as m; print(m.version('flashinfer-python'))"],
+                                    capture_output=True, text=True, env=env).stdout.strip()
+                if fi:
+                    try:
+                        self._step(job, "flashinfer", [*pip, "install", "--extra-index-url", FLASHINFER_INDEX_URL,
+                                                       f"flashinfer-cubin=={fi}"], log, env, 1800)
+                    except RuntimeError as e:
+                        if job["status"] == "cancelled":
+                            raise
+                        job["tail"].append(f"warning: no flashinfer-cubin {fi} ({e}); kernels will JIT-compile")
+                check = ("import json, torch, vllm, importlib.metadata as m\n"
+                         "ok = torch.cuda.is_available()\n"
+                         "print(json.dumps({'vllm': vllm.__version__, 'torch': torch.__version__, 'cuda': torch.version.cuda,"
+                         " 'gpu': ok and torch.cuda.get_device_name(0), 'gpus': torch.cuda.device_count() if ok else 0}))\n"
+                         "assert ok, 'torch cannot see a GPU: its CUDA build may be too new for this driver'")
+                self._step(job, "check", [py, "-c", check], log, {**backend_env("vllm"), "PATH": env["PATH"], "VIRTUAL_ENV": d}, 600)
+                info = json.loads(next(l for l in reversed(job["tail"]) if l.startswith("{")))
+                # the engine's own CLI and the flag catalog the settings check relies on
+                res = subprocess.run([os.path.join(d, "bin", "vllm"), "serve", "--help=all"], capture_output=True, text=True,
+                                     timeout=300, env={**backend_env("vllm"), "PATH": env["PATH"], "VIRTUAL_ENV": d})
+                nflags = len(parse_help(res.stdout or res.stderr))
+                job["tail"].append(f"vllm serve --help: {nflags} flags")
+                if nflags < 20:
+                    raise RuntimeError(f"`vllm serve --help` failed (exit {res.returncode}): {(res.stderr or res.stdout)[-300:]}")
+                if job["status"] == "cancelled":
+                    raise RuntimeError("cancelled")
+                with open(meta_path, "w") as f:
+                    json.dump({**info, "flashinfer": fi or None, "flags": nflags, "ok": True, "installed_at": time.time()}, f)
+            select_vllm_env(job["name"])
+            job.update(status="done", switched=True, finished=time.time())
+            job["tail"].append(f"vLLM {info['vllm']} (torch {info['torch']}, CUDA {info['cuda']}) installed, checked and "
+                               "selected; it is used from the next vLLM start")
+        except Exception as e:
+            cancelled = job["status"] == "cancelled"
+            job.update(status="cancelled" if cancelled else "failed", error=None if cancelled else str(e)[:400],
+                       finished=time.time())
+            if cancelled:
+                shutil.rmtree(d, ignore_errors=True)
+            else:
+                try:
+                    os.makedirs(d, exist_ok=True)
+                    with open(meta_path, "w") as f:
+                        json.dump({"ok": False, "error": str(e)[:400], "vllm": job["version"]}, f)
+                except OSError:
+                    pass
+        finally:
+            self.proc = None
+
+    def cancel(self):
+        if not self.running():
+            raise RuntimeError("no install is running")
+        self.job["status"] = "cancelled"
+        if self.proc and self.proc.poll() is None:
+            os.killpg(self.proc.pid, signal.SIGTERM)
+
+    def remove(self, name):
+        d = os.path.join(VLLM_ENVS_DIR, name or "")
+        if not name or os.path.dirname(os.path.normpath(d)) != os.path.normpath(VLLM_ENVS_DIR) or not os.path.isdir(d):
+            raise KeyError(name)
+        if vllm_env() == d:
+            raise RuntimeError(f"{name} is in use; switch to another vLLM first")
+        if self.running() and self.job["name"] == name:
+            raise RuntimeError(f"{name} is being installed")
+        shutil.rmtree(d)
+        try:
+            os.remove(d + ".log")
+        except OSError:
+            pass
+        return self.list()
 
 
 # ── model library ─────────────────────────────────────────────────────────
@@ -1385,7 +1802,8 @@ def vllm_parsers():
                 "    return sorted(next(v for k, v in vars(m).items() if isinstance(v, dict) and v))\n"
                 "print(json.dumps({'reasoning': names(R), 'tool': names(T)}))")
         try:
-            out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=180)
+            out = subprocess.run([vllm_python(), "-c", code], capture_output=True, text=True, timeout=180,
+                                 env=backend_env("vllm"))
             _parsers.update(json.loads(out.stdout.strip().splitlines()[-1]))
         except Exception:
             pass
@@ -2531,6 +2949,7 @@ class App:
         self.cfg = load_config()
         self.backend = Backend()
         self.downloads = Downloads()
+        self.vllm_envs = VllmEnvs()
         self.apply_lock = threading.Lock()
         self.smoke = None  # last smoke_test result for the running backend
 
@@ -2547,7 +2966,7 @@ class App:
                 if name in res:
                     self.backend.log(f"smoke test · {name}: {res[name][0]} — {res[name][1]}", tag="server")
 
-    def start_selected(self, listener=None):
+    def start_selected(self, listener=None, meta=None):
         kind = self.cfg["backend"]
         try:
             argv = build_argv(kind, self.cfg)
@@ -2564,14 +2983,62 @@ class App:
             return
         for i in issues:
             self.backend.log(f"warning: {i['msg']}", tag="server")
+        self.smoke = None
+        self.backend.start(kind, argv, gpu_env(self.cfg, kind), self._with_smoke(listener), meta)
 
+    def _with_smoke(self, listener=None):
         def outcome(event, error=None):
             if listener:
                 listener(event, error)
             if event == "ready" and self.cfg.get("ui", {}).get("smoke_test", True):
                 threading.Thread(target=self.run_smoke, daemon=True).start()
-        self.smoke = None
-        self.backend.start(kind, argv, gpu_env(self.cfg, kind), outcome)
+        return outcome
+
+    @staticmethod
+    def _boot_outcome(backend):
+        """Boot guard: the attempt counted as failed by boot_now is cleared once the backend is ready."""
+        def outcome(event, error=None):
+            if event == "ready":
+                write_boot_record({"fails": 0, "at": time.time(), "backend": backend})
+            else:
+                write_boot_record({**read_boot_record(), "error": (error or "failed")[:300]})
+        return outcome
+
+    def adopt(self):
+        """Manager start: keep the engine the previous manager left running (see Backend.adopt). A boot
+        model still loading keeps its boot guard, and the smoke test runs once it is ready as usual."""
+        rec = self.backend.adopt()
+        if not rec:
+            return False
+        boot = (rec.get("meta") or {}).get("boot")
+        self.boot_source, self.boot_skipped = boot, None
+        if self.backend.state == "starting":
+            self.backend.listener = self._with_smoke(self._boot_outcome(rec["kind"]) if boot else None)
+        return True
+
+    def restart_manager(self):
+        """Re-execute this file in place (POST /api/manager/restart): picks up a new manager.py without
+        touching the engine. os.execv keeps the PID, so the engine stays our child and is adopted from
+        BACKEND_RECORD by the new process. Refused while a start/stop or a download is in flight
+        (a download's output pipe would not survive the exec)."""
+        if any(j["proc"].poll() is None for j in list(self.downloads.jobs.values())):
+            raise RuntimeError("a download is running; restart the manager once it finishes or is cancelled")
+        if self.vllm_envs.running():
+            raise RuntimeError("a vLLM upgrade is installing; restart the manager once it finishes or is cancelled")
+        if not self.apply_lock.acquire(blocking=False):  # held until the exec: no start/apply in between
+            raise RuntimeError("a backend restart is in progress")
+        if self.backend.state == "stopping":
+            self.apply_lock.release()
+            raise RuntimeError("the backend is stopping; try again once it has stopped")
+
+        def run():
+            time.sleep(0.5)  # let the HTTP reply go out first
+            with self.backend.lock:  # not mid-start: the record of a just-started engine is written
+                self.backend.log("restarting the manager; the backend keeps running", tag="server")
+                sys.stdout.flush()
+                sys.stderr.flush()
+                os.execv(sys.executable, [sys.executable, os.path.abspath(__file__), *sys.argv[1:]])
+        threading.Thread(target=run, daemon=True).start()
 
     def apply(self, new_cfg):
         """Validate, save, then restart in the background so the HTTP call returns at once."""
@@ -2634,14 +3101,8 @@ class App:
             return
         write_boot_record({"fails": rec.get("fails", 0) + 1, "at": time.time(), "backend": backend,
                            "error": "the container stopped before it was ready"})
-
-        def outcome(event, error=None):
-            if event == "ready":
-                write_boot_record({"fails": 0, "at": time.time(), "backend": backend})
-            else:
-                write_boot_record({**read_boot_record(), "error": (error or "failed")[:300]})
         self.backend.log(f"boot: starting {backend} from {where}", tag="server")
-        self.start_selected(outcome)
+        self.start_selected(self._boot_outcome(backend), meta={"boot": source})
 
     def state(self):
         snap = self.backend.snapshot()
@@ -2651,7 +3112,12 @@ class App:
                          "skipped": getattr(self, "boot_skipped", None), "fails": read_boot_record().get("fails", 0)},
                 "updates": read_updates(), "smoke": self.smoke,
                 "webui_port": int(_env("WEBUI_PORT", "3000")),  # Open WebUI, for the pages' Chat link
-                "models_dir": MODELS_DIR, "endpoint": f"http://{BACKEND_HOST}:{BACKEND_PORT}"}
+                "models_dir": MODELS_DIR, "endpoint": f"http://{BACKEND_HOST}:{BACKEND_PORT}",
+                "manager": {"pid": os.getpid(), "started_at": MANAGER_STARTED_AT},
+                # running vLLM started from another env than the selected one → restart it to switch
+                "vllm_envs": {**self.vllm_envs.list(),
+                              "restart_needed": snap["kind"] == "vllm" and snap["state"] in ("running", "starting")
+                              and bool(snap["argv"]) and snap["argv"][0] != vllm_bin()}}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -2692,6 +3158,24 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if method == "GET" and path == "/api/state":
                 return self.send_json(200, app.state())
+            if method == "GET" and path == "/api/vllm/envs":
+                return self.send_json(200, app.vllm_envs.list())
+            if method == "POST" and path == "/api/vllm/install":
+                return self.send_json(202, app.vllm_envs.install(self.body().get("version")))
+            if method == "POST" and path == "/api/vllm/install/cancel":
+                app.vllm_envs.cancel()
+                return self.send_json(200, app.vllm_envs.list())
+            if method == "PUT" and path == "/api/vllm/env":  # select / roll back; null = the image's vLLM
+                if app.vllm_envs.running() and app.vllm_envs.job["name"] == self.body().get("name"):
+                    raise RuntimeError("that env is still installing")
+                select_vllm_env(self.body().get("name") or None)
+                return self.send_json(200, app.vllm_envs.list())
+            m = re.fullmatch(r"/api/vllm/envs/([\w.+-]+)", path)
+            if method == "DELETE" and m:
+                return self.send_json(200, app.vllm_envs.remove(m.group(1)))
+            if method == "POST" and path == "/api/manager/restart":
+                app.restart_manager()
+                return self.send_json(202, {"ok": True, "pid": os.getpid()})
             if method == "GET" and path == "/api/health":
                 # the container is healthy when its pages and this API answer; a model is optional
                 snap = app.backend.snapshot()
@@ -2807,7 +3291,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(200, catalog(q.get("backend", app.cfg["backend"])))
             if method == "GET" and path == "/api/logs":
                 lines = app.backend.logs_after(int(q.get("after", 0)))
-                return self.send_json(200, {"lines": lines, "seq": app.backend.seq})
+                return self.send_json(200, {"lines": lines, "seq": app.backend.seq, "id": app.backend.log_id})
             if method == "PUT" and path == "/api/config":
                 cfg = self.body()
                 if cfg.get("backend") not in BACKENDS:
@@ -2882,6 +3366,7 @@ def main():
     if args.download:
         return download_main(args.download)
 
+    reap_inherited(keep={(_read_json(BACKEND_RECORD) or {}).get("pid")})  # the engine itself: Backend.adopt
     app = App()
     Handler.app = app
 
@@ -2894,7 +3379,8 @@ def main():
     print(f"[server] manager on {args.host}:{args.port}, config {CONFIG_PATH}, backend {app.cfg['backend']}", flush=True)
     threading.Thread(target=vllm_parsers, daemon=True).start()  # warm the parser registry for /api/schema
     threading.Thread(target=update_loop, args=(app,), daemon=True).start()
-    app.boot_now()
+    if not app.adopt():  # an engine left running by a manager restart, else the boot plan
+        app.boot_now()
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
 
 

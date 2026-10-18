@@ -107,6 +107,16 @@ nav a.on{background:var(--text);color:var(--bg)}
 .gm-sep{height:1px;background:var(--line);margin:4px 6px}
 .gm-note{font:10.5px var(--mono);color:var(--dim);padding:2px 10px 6px;line-height:1.5}
 .gm-note .up{color:var(--amber)}
+/* gear menu (vLLM): installed versions, upgrade, rollback */
+.gmenu{max-width:min(380px,calc(100vw - 16px))}
+.ve{display:flex;align-items:center;gap:8px;padding:4px 10px;font:12px var(--mono)}
+.ve .vv{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ve .vl{font-size:10.5px;color:var(--dim)}
+.ve.on .vv{color:var(--lime)}
+.ve.bad .vv{color:var(--red)}
+.vjob{margin:2px 10px 6px;padding:6px 8px;border:1px solid var(--line);border-radius:7px;font:10.5px/1.45 var(--mono);color:var(--muted)}
+.vjob .t{color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.vjob.err{border-color:color-mix(in oklab,var(--red) 50%,var(--line));color:var(--red)}
 .be .upd{margin-top:6px;font:10.5px var(--mono);color:var(--dim)}
 .be .upd .chip{color:var(--amber);background:color-mix(in oklab,var(--amber) 12%,#151c27)}
 .be .radio{width:16px;height:16px;border-radius:50%;border:2px solid var(--line2);flex:none}
@@ -553,13 +563,14 @@ button.chip.dismiss:hover,button.chip.dismiss:focus-visible{filter:brightness(1.
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h10M4 18h8M18 14v8M14 18h8"/></svg>
     <span>Edit form</span><span class="gm-k" id="gmEditOn" hidden>on</span></button>
   <div class="gm-sep"></div>
-  <label class="gm-i sw" role="menuitemcheckbox" title="Once a day, ask GitHub (llama.cpp releases) and PyPI (vLLM) whether a newer version is out. Nothing is installed: the backend card shows what to set in .env before rebuilding."><input type="checkbox" id="prefUpd"><i></i><span>Daily update check</span></label>
+  <label class="gm-i sw" role="menuitemcheckbox" title="Once a day, ask GitHub (llama.cpp releases) and PyPI (vLLM) whether a newer version is out. Nothing is installed by the check itself: llama.cpp needs a rebuild; vLLM can be upgraded from this menu."><input type="checkbox" id="prefUpd"><i></i><span>Daily update check</span></label>
   <label class="gm-i sw" role="menuitemcheckbox" title="When a model finishes loading, send it two small requests: one that should come back as a parsed tool call, one whose reasoning should be split out. Shows whether the tool-call / reasoning parsers really work for this model."><input type="checkbox" id="prefSmoke"><i></i><span>Smoke test after load</span></label>
   <div class="gm-sep"></div>
   <button type="button" class="gm-i" id="updBtn" role="menuitem" title="Check for newer llama.cpp / vLLM releases now">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></svg>
     <span>Check for updates now</span></button>
   <div class="gm-note" id="gmUpd"></div>
+  <div id="gmVllm" hidden></div>
 </div>
 
 <script>
@@ -681,8 +692,48 @@ function renderMenu() {
   const x = S.state?.updates?.[be], ago = S.state?.updates?.checked_at ? dur(Date.now() / 1000 - S.state.updates.checked_at) + " ago" : null;
   $("gmUpd").innerHTML = !x ? "not checked yet"
     : x.error ? `last check failed · ${esc(ago)}`
-    : x.available ? `<span class="up">⬆ ${esc(x.latest)} available</span> · set ${be === "vllm" ? "VLLM_VERSION" : "LLAMA_CPP_REF"}=${esc(x.latest)} in .env and rebuild`
+    : x.available ? `<span class="up">⬆ ${esc(x.latest)} available</span> · ${be === "vllm" ? "upgrade below, no rebuild needed"
+      : `set LLAMA_CPP_REF=${esc(x.latest)} in .env and rebuild`}`
     : `✓ ${esc(x.latest)} is the latest · checked ${esc(ago)}`;
+  renderVllmEnvs();
+}
+// ── vLLM versions: upgrade into state/envs, switch, roll back ────────────
+function renderVllmEnvs() {
+  const el = $("gmVllm"), v = S.state?.vllm_envs;
+  el.hidden = S.menuFor !== "vllm" || !v;
+  if (el.hidden) return;
+  const up = S.state.updates?.vllm, job = v.job, busy = job?.status === "installing";
+  const rows = v.envs.map(e => `<div class="ve${e.active ? " on" : ""}${e.ok ? "" : " bad"}" title="${esc(e.name ? `${v.dir}/${e.name}${e.torch ? `\ntorch ${e.torch} · CUDA ${e.cuda}` : ""}${e.flashinfer ? `\nFlashInfer ${e.flashinfer}` : ""}${e.error ? "\n" + e.error : ""}` : "the vLLM built into the image (/opt/venv)")}">
+      <span class="vv">${e.active ? "● " : "○ "}${esc(e.version || "?")} <span class="vl">${e.name ? "state/envs" : "image"}${e.ok ? "" : " · failed"}</span></span>
+      ${e.active ? `<span class="vl">in use</span>` : e.ok ? `<button type="button" class="btn sm ghost" data-venv="${esc(e.name || "")}">Use</button>` : ""}
+      ${e.name && !e.active ? `<button type="button" class="btn sm danger" data-vdel="${esc(e.name)}" title="Delete this env">✕</button>` : ""}</div>`).join("");
+  const last = job?.tail?.length ? job.tail[job.tail.length - 1] : "";
+  const jobHtml = !job ? ""
+    : busy ? `<div class="vjob">Installing vLLM ${esc(job.version)} · ${esc(job.step || "starting")} · ${dur(Date.now() / 1000 - job.started)}
+        <div class="t" title="${esc(last)}">${esc(last)}</div>
+        <button type="button" class="btn sm ghost" id="vCancel" style="margin-top:4px">Cancel</button></div>`
+    : job.status === "failed" ? `<div class="vjob err">vLLM ${esc(job.version)} failed at ${esc(job.step || "?")}: ${esc(job.error || "")}<div class="t">log: state/envs/${esc(job.name)}.log</div></div>`
+    : job.status === "cancelled" ? `<div class="vjob">vLLM ${esc(job.version)} install cancelled</div>`
+    : `<div class="vjob">${esc(last)}</div>`;
+  const canUp = !busy && up?.available && up.latest && !v.envs.some(e => e.version === up.latest && e.ok);
+  const html = `<div class="gm-sep"></div><div class="gm-h">vLLM versions</div>${rows}${jobHtml}`
+    + (v.restart_needed ? `<div class="gm-note"><span class="up">The running vLLM is another version: Apply &amp; restart to switch.</span></div>` : "")
+    + (canUp ? `<button type="button" class="gm-i" id="vUp" role="menuitem" title="pip-installs vLLM ${esc(up.latest)} with its own torch into state/envs/vllm-${esc(up.latest)} (about 15 GB), checks that it sees the GPU and that vllm serve --help works, then selects it. The image's vLLM stays for rollback.">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg><span>Upgrade to vLLM ${esc(up.latest)}</span></button>
+        <div class="gm-note">No rebuild; used from the next vLLM start. Roll back with <b>Use</b> on another version.</div>` : "");
+  if (el.dataset.html === html) return;
+  el.dataset.html = html; el.innerHTML = html;
+  if ($("vUp")) $("vUp").onclick = () => {
+    if (!confirm(`Install vLLM ${up.latest} into state/envs/vllm-${up.latest}?\n\nIt downloads vLLM with its own PyTorch (about 15 GB on disk, several minutes), checks it, then selects it for the next vLLM start. A running model keeps running. The image's vLLM stays available for rollback.`)) return;
+    act(() => api("vllm/install", {method: "POST", body: {version: up.latest}}), `installing vLLM ${up.latest}`);
+  };
+  if ($("vCancel")) $("vCancel").onclick = () => act(() => api("vllm/install/cancel", {method: "POST"}), "install cancelled");
+  el.querySelectorAll("[data-venv]").forEach(b => b.onclick = () =>
+    act(() => api("vllm/env", {method: "PUT", body: {name: b.dataset.venv || null}}), `vLLM ${b.dataset.venv || "from the image"} selected; used from the next vLLM start`));
+  el.querySelectorAll("[data-vdel]").forEach(b => b.onclick = () => {
+    if (!confirm(`Delete state/envs/${b.dataset.vdel}?`)) return;
+    act(() => api("vllm/envs/" + encodeURIComponent(b.dataset.vdel), {method: "DELETE"}), `deleted ${b.dataset.vdel}`);
+  });
 }
 function openMenu(g) {
   const be = g.dataset.gear, m = $("gmenu");
@@ -1462,19 +1513,22 @@ async function loadModels() {
   const row = (x, kind) => {
     const meta = x.meta || {}, chips = kind === "hf"
       ? [!x.complete ? "partial" : x.kind === "hub" ? "hf cache" : "folder", meta.quant, meta.vision ? "vision" : null]
-      : [meta.quant, meta.size_label, kind === "other" ? (meta.error ? "unreadable" : x.role) : null];
+      : [meta.quant, meta.size_label, meta.error ? "unreadable" : null];
     return `<tr><td class="path">${kind === "hf" ? `${esc(x.repo)}<br><span style="color:var(--dim);font-size:11px">${esc(x.path)}</span>` : esc(x.path)}</td>
     <td>${chips.filter(Boolean).map(c => `<span class="chip">${esc(c)}</span>`).join(" ")}${x.in_use ? ` <span class="chip use">in config</span>` : ""}</td>
     <td class="r">${gb(x.size)}</td><td class="r"><button class="btn sm danger" data-del="${esc(x.path)}" title="delete">Delete</button></td></tr>`;
   };
-  // groups: llama.cpp targets, DFlash drafts, other drafts, vision projectors, vLLM repos, anything unreadable
+  // groups by name: "dflash" in a GGUF file or HF repo name → DFlash, else "mmproj" in a GGUF file name →
+  // mmproj, everything else (GGUF files and HF repos) → Model
+  const fname = x => x.path.split("/").pop().toLowerCase();
+  const ggufGroup = x => fname(x).includes("dflash") ? "dflash" : fname(x).includes("mmproj") ? "mmproj" : "model";
+  const hfDflash = x => (x.repo || x.path).toLowerCase().includes("dflash");
   const groups = [
-    {id: "main", name: "Main · GGUF", note: "llama.cpp target models", items: m.gguf.filter(x => x.role === "model" && !x.meta?.error), kind: "gguf"},
-    {id: "dflash", name: "DFlash", note: "DFlash draft models", items: m.gguf.filter(x => x.role === "draft" && x.meta?.arch === "dflash"), kind: "gguf"},
-    {id: "draft", name: "Other drafts", note: "EAGLE / other draft models", items: m.gguf.filter(x => x.role === "draft" && x.meta?.arch !== "dflash" && !x.meta?.error), kind: "gguf"},
-    {id: "mmproj", name: "mmproj", note: "vision projectors", items: m.gguf.filter(x => x.role === "mmproj" && !x.meta?.error), kind: "gguf"},
-    {id: "hf", name: "Hugging Face · vLLM", note: "repos in the hub cache", items: m.hf, kind: "hf"},
-    {id: "other", name: "Other", note: "GGUFs whose header couldn't be read", items: m.gguf.filter(x => x.meta?.error), kind: "other"},
+    {id: "model", name: "Model", note: "GGUF files and Hugging Face repos without dflash or mmproj in the name",
+     items: [...m.gguf.filter(x => ggufGroup(x) === "model"), ...m.hf.filter(x => !hfDflash(x))]},
+    {id: "dflash", name: "DFlash", note: "GGUF files and Hugging Face repos with dflash in the name",
+     items: [...m.gguf.filter(x => ggufGroup(x) === "dflash"), ...m.hf.filter(hfDflash)]},
+    {id: "mmproj", name: "mmproj", note: "GGUF files with mmproj in the name", items: m.gguf.filter(x => ggufGroup(x) === "mmproj")},
   ].filter(g => g.items.length);
   let closed;
   try { closed = new Set(JSON.parse(localStorage.getItem("io-model-groups-closed") || "[]")); } catch { closed = new Set(); }
@@ -1483,7 +1537,7 @@ async function loadModels() {
     const open = !closed.has(g.id), size = g.items.reduce((s, x) => s + (x.size || 0), 0), used = g.items.some(x => x.in_use);
     return `<div class="mgrp" data-g="${g.id}"><button class="mgrp-h" type="button" aria-expanded="${open}" aria-controls="mg-${g.id}" title="${esc(g.note)}">
         <span class="car">▸</span><span>${esc(g.name)}</span><span class="ct">${g.items.length}</span>${used ? `<span class="dot" title="in the current config"></span>` : ""}<span class="sp"></span><span class="sz">${gb(size)}</span></button>
-      <div class="mgrp-b" id="mg-${g.id}"${open ? "" : " hidden"}><table><tbody>${g.items.map(x => row(x, g.kind)).join("")}</tbody></table></div></div>`;
+      <div class="mgrp-b" id="mg-${g.id}"${open ? "" : " hidden"}><table><tbody>${g.items.map(x => row(x, m.hf.includes(x) ? "hf" : "gguf")).join("")}</tbody></table></div></div>`;
   }).join("") : `<div class="empty">no models yet — download one below</div>`;
   const syncAll = () => { $("mAll").hidden = groups.length < 2; $("mAll").textContent = groups.every(g => closed.has(g.id)) ? "expand all" : "collapse all"; };
   $("models").querySelectorAll(".mgrp-h").forEach(b => b.onclick = () => {
@@ -1651,6 +1705,9 @@ async function loadJobs() {
 function logClass(l) { return l.startsWith("$ ") ? "c" : /error|failed|traceback|exception|out of memory|cuda.*fail/i.test(l) ? "e" : /warn/i.test(l) ? "w" : /ready after|listening|stopping|exited/i.test(l) ? "s" : ""; }
 async function pollLogs() {
   let r; try { r = await api("logs?after=" + S.logSeq); } catch { return; }
+  // a restarted manager numbers its lines from 0 again (and reloads the engine's recent output)
+  if (S.logId && r.id !== S.logId) { S.logId = r.id; S.logs = []; S.logSeq = 0; return pollLogs(); }
+  S.logId = r.id;
   if (r.seq < S.logSeq) { S.logs = []; }
   if (!r.lines.length) { S.logSeq = r.seq; return; }
   S.logSeq = r.lines[r.lines.length - 1][0];

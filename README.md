@@ -38,6 +38,7 @@ Build it once, open `http://127.0.0.1:8888/`, then browse Hugging Face, download
 - [Configuration (`.env`)](#configuration-env)
 - [Where your data lives](#where-your-data-lives)
 - [Updating llama.cpp or vLLM](#updating-llamacpp-or-vllm)
+- [Updating the pages and the manager](#updating-the-pages-and-the-manager)
 - [Reference profile: Qwen3.8-27B + DFlash 2 on an RTX 3090](#reference-profile-qwen38-27b--dflash-2-on-an-rtx-3090)
 - [Troubleshooting](#troubleshooting)
 - [Make targets and scripts](#make-targets-and-scripts)
@@ -90,7 +91,7 @@ Checks the NVIDIA driver from WSL and from inside a CUDA container.
 docker compose up --build -d
 ```
 
-Builds the image (the **first build is long**: it compiles llama.cpp for your GPU and installs vLLM) and starts the engine container plus Open WebUI.
+Builds the image (the **first build is long**: it compiles llama.cpp for your GPU and installs vLLM) and starts the engine container plus Open WebUI. The pages, the server manager and the hardware sampler run from this clone's `python/` folder (mounted read-only), so changing them later needs no rebuild; see [Updating the pages and the manager](#updating-the-pages-and-the-manager).
 
 ```bash
 ./scripts/health.sh
@@ -249,7 +250,7 @@ Both engines have a **Chat template** picker; empty means the model's own templa
 
 ### Update check
 
-Once a day (gear menu → *Daily update check*, on by default) the manager asks GitHub for llama.cpp's latest release, including how many commits it's ahead of your build, and PyPI for vLLM's latest version. An **update** badge on the engine card says what to set in `.env` before rebuilding. **Check for updates now** runs it on demand; results are kept in `state/updates.json`. Nothing is installed automatically; see [Updating](#updating-llamacpp-or-vllm).
+Once a day (gear menu → *Daily update check*, on by default) the manager asks GitHub for llama.cpp's latest release, including how many commits it's ahead of your build, and PyPI for vLLM's latest version. An **update** badge on the engine card shows a newer release. **Check for updates now** runs it on demand; results are kept in `state/updates.json`. The check itself installs nothing: a newer vLLM can be installed from the vLLM gear menu without a rebuild, and llama.cpp needs a rebuild; see [Updating](#updating-llamacpp-or-vllm).
 
 ### Monitor
 
@@ -370,11 +371,17 @@ The engine settings in `.env` only **seed** the first start (and `AUTOSTART`). A
 | `state/templates/` | Saved chat templates | yes |
 | `state/cache/` | `--help` catalogs per engine version, vLLM / FlashInfer / Triton compile caches | yes |
 | `state/updates.json`, `state/boot_attempts.json` | Last update check; boot-guard counter | yes |
+| `state/envs/`, `state/vllm_env.json` | vLLM versions installed from `/server` (about 15 GB each) and which one is selected | yes |
+| `state/backend.json`, `state/logs/backend.log` | The running engine (pid, command line), so a restarted manager can adopt it; the engine's output (replaced at each start) | only while the engine runs / until the next start |
 | volume `inference-overdrive_open-webui-data` | Open WebUI chats, users, settings | yes (`docker compose down` keeps it; `down -v` deletes it) |
 
 `models/`, `state/` and `.env` are git-ignored, and `.dockerignore` only sends `docker/` and `python/` to the build, so models and tokens never end up in the image.
 
 ## Updating llama.cpp or vLLM
+
+**vLLM, without a rebuild.** When the update check finds a newer vLLM, the vLLM card's gear menu (⚙) shows **Upgrade to vLLM X**. It installs that version into its own Python environment, `state/envs/vllm-X`. This is a full install with its own PyTorch from the same CUDA 13.0 index as the image, about 15 GB, and takes several minutes. It also installs the matching FlashInfer kernels. Then it checks that PyTorch sees the GPU and that `vllm serve --help` works, and selects it. A model that is already running keeps running. The new version is used from the next vLLM start (*Apply & restart*), and the settings check validates your saved settings against its `--help`. The menu lists every installed version: **Use** switches between them, including back to the image's own vLLM (rollback), and ✕ deletes one that isn't in use. The selection is kept in `state/vllm_env.json`. If the selected environment goes missing, the image's vLLM is used. The install log is `state/envs/vllm-X.log`.
+
+**Rebuilding** (llama.cpp, or to bake a vLLM version into the image):
 
 1. Set the new version in `.env`: `LLAMA_CPP_REF=<tag or commit>` and/or `VLLM_VERSION=<version>`. The update badge on `/server` tells you the value.
 2. Rebuild and restart:
@@ -386,6 +393,27 @@ The engine settings in `.env` only **seed** the first start (and `AUTOSTART`). A
 3. On the next start the settings check compares your saved settings with the new engine's `--help`. Renamed or removed flags are flagged before anything breaks, and the boot guard keeps a broken boot default from looping.
 
 For vLLM, check that the new version still matches the CUDA 13.0 PyTorch build (`TORCH_INDEX_URL` in `docker/Dockerfile`) before rebuilding.
+
+## Updating the pages and the manager
+
+`docker-compose.yml` mounts the repository's `python/` folder read-only at `/opt/src`, and `docker/entrypoint.sh` (also mounted from the repository) links the image's copies to it at container start. Edits, `git pull` or a branch switch therefore reach the running container without a rebuild:
+
+| Changed | Takes effect |
+| --- | --- |
+| `python/Server/index.html`, `python/Dashboard/monitor.html` | On the next page reload |
+| `python/Server/manager.py` | After a manager restart (below); the loaded model keeps running |
+| `python/Dashboard/hw-metrics.py`, `docker/entrypoint.sh` | On the next container restart (`docker compose restart llm-server`; this stops the model) |
+| `docker/nginx.conf`, `docker/Dockerfile` | After a rebuild (`docker compose up --build -d`) |
+
+Restart only the manager:
+
+```bash
+curl -fsS -X POST http://127.0.0.1:8888/server/api/manager/restart
+```
+
+Add `-H "Authorization: Bearer $SERVER_ADMIN_TOKEN"` if you set an admin token. The manager re-executes itself in place and adopts the engine that is running (recorded in `state/backend.json`; its output is in `state/logs/backend.log`, so the *Backend log* picks up where it left off). A model that is still loading carries on loading, and **Stop** works on it as usual. The restart is refused while a download is running. Stopping the container (`docker compose stop`/`down`) still stops the engine cleanly first.
+
+The image keeps its own copies of these files, so it also runs without the mounts (for example with plain `docker run`); a compose setup only needs the first `docker compose up -d` after pulling this change to switch to the live files.
 
 ## Reference profile: Qwen3.8-27B + DFlash 2 on an RTX 3090
 
@@ -437,9 +465,9 @@ The make targets are shortcuts for the commands next to them. Ubuntu on WSL does
 
 ```text
 docker/Dockerfile                 # CUDA 13.4.2: llama.cpp CMake build + vLLM wheel, nginx, pages
-docker/entrypoint.sh              # starts hw-metrics + nginx, then runs the server manager
+docker/entrypoint.sh              # links the live python/ files, starts hw-metrics + nginx, runs the server manager
 docker/nginx.conf                 # :8888 front door: / redirect, /server/, /monitor/, engine proxy
-docker-compose.yml                # llm-server + open-webui (project "inference-overdrive")
+docker-compose.yml                # llm-server + open-webui (project "inference-overdrive"); mounts python/ live
 python/Server/manager.py          # engine process, settings, auto-tune, downloads, API (/server/api/)
 python/Server/index.html          # control page (/server/)
 python/Dashboard/monitor.html     # monitor (/monitor/)

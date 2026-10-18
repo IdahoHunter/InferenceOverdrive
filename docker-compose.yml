@@ -18,6 +18,9 @@ services:
     container_name: inference-overdrive-llm-server
     # Reaps the nginx / hw-metrics sidecars that entrypoint.sh backgrounds.
     init: true
+    # The repo's entrypoint.sh (mounted below) rather than the image's copy, so a change to it
+    # needs no rebuild either; bash because the mounted file keeps its git mode (not executable).
+    entrypoint: ["bash", "/usr/local/bin/entrypoint.sh"]
     ports:
       # OpenAI API, /monitor/ and /server/ (backend + model control).
       # LLAMA_PORT is the old name of LLM_PORT and still works.
@@ -27,6 +30,13 @@ services:
       - ./models:/models
       # /server settings (server.json); survives image rebuilds.
       - ./state:/state
+      # Live code: the pages, the server manager and hw-metrics run from the repo instead of the
+      # copies in the image (entrypoint.sh links them), so editing python/ needs no image rebuild.
+      # A directory, not single files: a file mount pins the inode, and git checkout / pull
+      # replaces files, which would leave the container on the old version.
+      - ./python:/opt/src:ro
+      # read once at container start (a file mount is fine here)
+      - ./docker/entrypoint.sh:/usr/local/bin/entrypoint.sh:ro
     # Docker Desktop's GPU support injects the host driver (libcuda,
     # nvidia-smi) and /dev/dxg at runtime. Every card is passed in; pick which
     # ones each backend uses on /server (Multi-GPU → GPUs).
