@@ -313,6 +313,8 @@ td.path{word-break:break-all}
 .qtab label:hover{background:rgba(255,255,255,.02)}
 .qtab label.rec{background:color-mix(in oklab,var(--lime) 7%,transparent)}
 .qtab input{accent-color:var(--lime);width:15px;height:15px}
+button.chip.dismiss{border:0;cursor:pointer;font-family:var(--mono)}
+button.chip.dismiss:hover,button.chip.dismiss:focus-visible{filter:brightness(1.2);outline:none;box-shadow:0 0 0 1px currentColor}
 .chip.fits{color:var(--lime)} .chip.tight{color:var(--amber)} .chip.offload,.chip.too-big{color:var(--red)} .chip.tp{color:var(--cyan)}
 .chip.star{background:var(--lime);color:#0a1400}
 .files-list label{display:grid;grid-template-columns:auto 1fr auto;gap:10px;padding:7px 12px;border-bottom:1px solid var(--line);font:12px var(--mono);cursor:pointer;align-items:center}
@@ -437,6 +439,16 @@ td.path{word-break:break-all}
 
   <div class="col">
     <div class="panel">
+      <h2>Backend log <span class="tag" id="logTag">0 lines</span></h2>
+      <div class="log-h">
+        <input type="text" id="logQ" placeholder="filter">
+        <label class="chk"><input type="checkbox" id="logFollow" checked> follow</label>
+        <button class="btn sm ghost" id="logClear">Clear</button>
+      </div>
+      <div class="logs" id="logs"></div>
+    </div>
+
+    <div class="panel">
       <h2>Models <span class="tag" id="mTag">/models</span></h2>
       <div class="disk"><span>Disk</span><span id="diskTxt">--</span></div>
       <div class="bar"><i id="diskBar" style="background:var(--violet)"></i></div>
@@ -494,15 +506,6 @@ td.path{word-break:break-all}
       <div id="jobs"></div>
     </div>
 
-    <div class="panel">
-      <h2>Backend log <span class="tag" id="logTag">0 lines</span></h2>
-      <div class="log-h">
-        <input type="text" id="logQ" placeholder="filter">
-        <label class="chk"><input type="checkbox" id="logFollow" checked> follow</label>
-        <button class="btn sm ghost" id="logClear">Clear</button>
-      </div>
-      <div class="logs" id="logs"></div>
-    </div>
   </div>
 </section>
 </div>
@@ -1575,16 +1578,23 @@ async function loadJobs() {
   let jobs; try { jobs = await api("downloads"); } catch { return; }
   const was = S.activeJobs || 0; S.activeJobs = jobs.filter(j => j.status === "downloading").length;
   if (was && !S.activeJobs) loadModels();
+  S.dismissed = S.dismissed || new Set();  // removed on the page right away, even before the server drops them
+  jobs = jobs.filter(j => !S.dismissed.has(j.id));
   $("jobs").innerHTML = jobs.slice(0, 8).map(j => {
     const pct = j.total ? j.done / j.total * 100 : 0, el = j.finished ? j.finished - j.started : Date.now() / 1000 - j.started;
     const rate = el > 0 ? j.done / el : 0, eta = rate > 0 && j.status === "downloading" ? (j.total - j.done) / rate : null;
     return `<div class="job ${j.status}"><div class="job-h"><span>${esc(j.repo)} <span style="color:var(--dim)">→ /models/${esc(j.dest === "." ? "" : j.dest)}</span></span>
-      ${j.status === "downloading" ? `<button class="btn sm danger" data-cancel="${j.id}">Cancel</button>` : `<span class="chip ${j.status === "done" ? "use" : ""}">${j.status}</span>`}</div>
+      ${j.status === "downloading" ? `<button class="btn sm danger" data-cancel="${j.id}">Cancel</button>` : `<button type="button" class="chip dismiss ${j.status === "done" ? "use" : ""}" data-dismiss="${j.id}" title="Remove from the list">${j.status} ✕</button>`}</div>
       <div class="bar"><i style="width:${(j.status === "done" ? 100 : pct).toFixed(1)}%"></i></div>
       <div class="job-f"><span>${gb(j.done)} / ${gb(j.total)} · ${j.files.length} file${j.files.length === 1 ? "" : "s"}</span><span>${j.status === "downloading" ? `${gb(rate)}/s${eta != null ? " · " + dur(eta) + " left" : ""}` : dur(el)}</span></div>
       ${j.error ? `<div class="err">${esc(j.error)}</div>` : ""}</div>`;
   }).join("");
   $("jobs").querySelectorAll("[data-cancel]").forEach(b => b.onclick = () => act(() => api("downloads/" + b.dataset.cancel, {method: "DELETE"}), "cancelled"));
+  $("jobs").querySelectorAll("[data-dismiss]").forEach(b => b.onclick = () => {
+    S.dismissed.add(b.dataset.dismiss);
+    b.closest(".job").remove();
+    api("downloads/" + b.dataset.dismiss, {method: "DELETE"}).catch(() => {});
+  });
 }
 
 // ── logs ────────────────────────────────────────────────────────────────

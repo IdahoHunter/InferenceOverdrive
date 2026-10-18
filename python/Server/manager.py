@@ -39,7 +39,7 @@ every non-GET request needs `Authorization: Bearer <token>`.
   GET    /api/hf/files?repo=&revision=  files (with sizes) in a Hugging Face repo + quant plan for this GPU
   GET    /api/downloads                 download jobs with progress
   POST   /api/downloads                 {repo, files?, revision?, layout: gguf|hf}
-  DELETE /api/downloads/<id>            cancel a download
+  DELETE /api/downloads/<id>            cancel a running download; remove a finished one from the list
 
 Stdlib only, plus huggingface_hub (from the vLLM venv) for downloads.
 """
@@ -2408,13 +2408,18 @@ class Downloads:
             job["error"] = next((l for l in reversed(job["tail"]) if l.strip()), f"exit code {proc.returncode}")
 
     def cancel(self, job_id):
+        """Stop a running download; a finished one (done / failed / cancelled) is dropped from the list."""
         with self.lock:
             job = self.jobs.get(job_id)
-        if not job:
-            raise KeyError(job_id)
+            if not job:
+                raise KeyError(job_id)
+            if job["proc"].poll() is not None and job["finished"]:
+                del self.jobs[job_id]
+                return "removed"
         if job["proc"].poll() is None:
             job["status"] = "cancelled"
             os.killpg(job["proc"].pid, signal.SIGTERM)
+        return "cancelled"
 
     @staticmethod
     def public(job):
@@ -2846,8 +2851,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(202, job)
             m = re.fullmatch(r"/api/downloads/(\w+)", path)
             if method == "DELETE" and m:
-                app.downloads.cancel(m.group(1))
-                return self.send_json(200, {"ok": True})
+                return self.send_json(200, {"ok": True, "result": app.downloads.cancel(m.group(1))})
             return self.send_json(404, {"error": f"no route {method} {url.path}"})
         except KeyError as e:
             return self.send_json(404, {"error": f"not found: {e}"})
