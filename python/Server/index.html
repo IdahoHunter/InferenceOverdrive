@@ -216,6 +216,13 @@ dialog.tpl::backdrop{background:rgba(2,4,8,.72);backdrop-filter:blur(2px)}
 .card-r code{font:11.5px var(--mono);color:var(--text);word-break:break-all}
 .card-r small{color:var(--dim)}
 .card-r:has(input:disabled){opacity:.55;cursor:default}
+.card-added{font:600 9px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--lime);border:1px solid color-mix(in oklab,var(--lime) 45%,var(--line2));border-radius:4px;padding:2px 4px}
+dialog.cdlg{width:min(560px,calc(100vw - 32px))}
+.cdlg-l{margin:0;padding:0;list-style:none;display:grid;gap:6px;max-height:50vh;overflow:auto}
+.cdlg-l li{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;font-size:12px}
+.cdlg-l code{font:12px var(--mono);color:var(--text);word-break:break-all}
+.cdlg-l span{font:11px var(--mono);color:var(--dim)}
+.cdlg-a{display:flex;justify-content:flex-end}
 /* smoke test (status panel) */
 .smoke{margin-top:12px;display:grid;gap:6px}
 .smoke:empty{display:none}
@@ -535,6 +542,14 @@ button.chip.dismiss:hover,button.chip.dismiss:focus-visible{filter:brightness(1.
   </div>
 </section>
 </div>
+<dialog class="tpl cdlg" id="cardDlg" aria-labelledby="cardDlgTitle">
+  <div class="tpl-in">
+    <div class="tpl-h"><span id="cardDlgTitle">Added from the model card</span></div>
+    <ul class="cdlg-l" id="cardDlgList"></ul>
+    <div class="tpl-msg">They're in the form now (unsaved). Apply &amp; restart to use them; Undo in the tune summary reverts them.</div>
+    <div class="cdlg-a"><button class="btn sm" id="cardDlgOk" type="button">OK</button></div>
+  </div>
+</dialog>
 <dialog class="tpl" id="tplDlg" aria-labelledby="tplTitle">
   <div class="tpl-in">
     <div class="tpl-h"><span id="tplTitle">Chat template</span><button class="btn sm ghost" id="tplClose" type="button">Close</button></div>
@@ -1157,8 +1172,8 @@ function renderTune() {
 function cardHTML(t) {
   if (!t.card?.length) return "";
   const val = v => v === true ? "" : v === false ? " (off)" : v == null ? "" : " " + v;
-  return `<div class="card-s"><div class="card-h"><span>From the model card — tick what to use</span>${t.cardApplied ? `<span class="tag">applied</span>` : `<button class="btn sm" id="cardApply" type="button">Use ticked flags</button>`}</div>
-    ${t.card.map((g, gi) => `<div class="card-g"><div class="card-src">${esc(g.source)}</div>${g.flags.map((f, fi) => `<label class="card-r"><input type="checkbox" data-card="${gi}:${fi}"${f.tick ? " checked" : ""}${f.note && /--help/.test(f.note) || t.cardApplied ? " disabled" : ""}><code>${esc(f.orig)}${esc(val(f.value))}</code><small>${esc(f.note || "")}</small></label>`).join("")}</div>`).join("")}</div>`;
+  return `<div class="card-s"><div class="card-h"><span>From the model card — tick what to use</span><button class="btn sm" id="cardApply" type="button">Use ticked flags</button></div>
+    ${t.card.map((g, gi) => `<div class="card-g"><div class="card-src">${esc(g.source)}</div>${g.flags.map((f, fi) => `<label class="card-r"><input type="checkbox" data-card="${gi}:${fi}"${f.tick ? " checked" : ""}${f.note && /--help/.test(f.note) ? " disabled" : ""}><code>${esc(f.orig)}${esc(val(f.value))}</code><small>${f.added ? `<span class="card-added">added</span> ` : ""}${esc(f.note || "")}</small></label>`).join("")}</div>`).join("")}</div>`;
 }
 // "640K" → 655360, "1k" → 1000 (vLLM's human-readable integers)
 function parseHuman(v) {
@@ -1169,9 +1184,11 @@ function parseHuman(v) {
 }
 function applyCard(t) {
   const be = t.be, conf = cfgOf(be), fields = S.schema[be] || [], used = [];
+  const val = v => v === true ? "" : v === false ? " (off)" : v == null ? "" : " " + v;
   document.querySelectorAll("#tune [data-card]").forEach(cb => {
-    if (!cb.checked || cb.disabled) return;
     const [gi, fi] = cb.dataset.card.split(":").map(Number), f = t.card[gi].flags[fi];
+    f.tick = cb.checked;  // the re-render below keeps whatever else is ticked
+    if (!cb.checked || cb.disabled) return;
     const field = fields.find(x => x.flag === f.flag);
     if (field && field.type !== "gguf") {
       const v = f.value;
@@ -1183,13 +1200,18 @@ function applyCard(t) {
       const row = conf.extra.find(x => x.flag === flag || x.flag === f.orig);
       if (row) { row.value = value; row.enabled = true; } else conf.extra.push({flag, value, enabled: true});
     }
-    used.push(f.orig);
+    // added: untick it (it's in the form now) and mark it, so more can be ticked and added
+    f.tick = false; f.added = true;
+    used.push({text: f.orig + val(f.value), where: field && field.type !== "gguf" ? field.label : "Additional flags"});
   });
   if (!used.length) { toast("nothing ticked", true); return; }
-  t.cardApplied = true;
   renderParams(); changed(); renderTune();
-  toast(`${used.length} flag${used.length === 1 ? "" : "s"} from the model card: ${used.join(" ")} — Undo reverts them`);
+  $("cardDlgList").innerHTML = used.map(u => `<li><code>${esc(u.text)}</code><span>→ ${esc(u.where)}</span></li>`).join("");
+  $("cardDlgTitle").textContent = `${used.length} flag${used.length === 1 ? "" : "s"} added from the model card`;
+  $("cardDlg").showModal();
+  $("cardDlgOk").focus();
 }
+$("cardDlgOk").onclick = () => $("cardDlg").close();
 $("tuneBtn").onclick = () => tune("manual");
 function bindField(el) {
   const f = S.schema[S.draft.backend].find(x => x.flag === el.dataset.flag);
