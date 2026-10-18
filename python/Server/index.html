@@ -900,10 +900,14 @@ function fieldHTML(f, edit) {
     if (smartFilter() && shown.length < list.length) filtNote = `<small class="filt">${shown.length} of ${list.length} GGUFs shown — ${role === "model" ? "target models only" : role === "draft" ? "drafts that pair with the target" : "projectors that pair with the target"}</small>`;
   } else if (f.type === "hfmodel") {
     // a real <select> like the GGUF pickers; "Other" reveals a box for a repo that isn't downloaded yet
-    const hf = (S.models?.hf || []).filter(m => !smartFilter() || m.complete);
-    const custom = !!(S.hfCustom || (v && !hf.some(m => m.value === v)));
+    // smart filter: complete repos that are models, not draft repos (those go in --speculative-config)
+    const all = S.models?.hf || [], hf = all.filter(m => !smartFilter() || (m.complete && !isHfDraft(m)));
+    const known = all.find(m => m.value === v), hidden = v && known && !hf.includes(known);
+    const custom = !!(S.hfCustom || (v && !known));
+    const label = m => `${m.repo} · ${gb(m.size)}${m.meta?.quant ? " · " + m.meta.quant : ""}${m.meta?.vision ? " · vision" : ""}${m.kind === "folder" ? " · folder" : ""}${isHfDraft(m) ? " · draft" : !m.complete ? " · partial" : ""}`;
+    if (smartFilter() && hf.length < all.length) filtNote = `<small class="filt">${hf.length} of ${all.length} repos shown — models only (draft and partial downloads hidden)</small>`;
     input = `<div class="hfrow" data-flag="${esc(f.flag)}" data-kind="hfmodel">
-      <select id="${id}"><option value="">— none —</option>${hf.map(m => `<option value="${esc(m.value)}"${m.value === v ? " selected" : ""}>${esc(m.repo)} · ${gb(m.size)}${m.meta?.quant ? " · " + esc(m.meta.quant) : ""}${m.meta?.vision ? " · vision" : ""}${m.kind === "folder" ? " · folder" : ""}</option>`).join("")}
+      <select id="${id}"><option value="">— none —</option>${hidden ? `<option value="${esc(v)}" selected>${esc(label(known))} (filtered)</option>` : ""}${hf.map(m => `<option value="${esc(m.value)}"${m.value === v ? " selected" : ""}>${esc(label(m))}</option>`).join("")}
         <option value="__custom__"${custom ? " selected" : ""}>Other — type a Hugging Face repo id…</option></select>
       <input type="text" class="hfcustom" value="${esc(custom ? v ?? "" : "")}" placeholder="owner/repo — vLLM downloads it into models/ on start" spellcheck="false" aria-label="Hugging Face repo id"${custom ? "" : " hidden"}></div>`;
   } else if (f.type === "select") {
@@ -1122,6 +1126,10 @@ function fitsSlot(m, role) {
   const target = (S.models?.gguf || []).find(x => x.path === cfgOf("llama.cpp").values["--model"]);
   return !target || compat(target.meta, m.meta) !== false;  // unknown pairing stays visible
 }
+// a Hugging Face repo that is a speculative-decoding draft (DFlash2DraftModel, EAGLE, …), not a model
+// vLLM serves: from config.json's architectures, the repo name only when there is no config
+const isHfDraft = m => m.meta?.archs?.length ? m.meta.archs.some(a => /draft|eagle|dflash|medusa/i.test(a))
+  : /dflash|eagle/i.test(m.repo || m.path);
 async function setPref(key, on) {
   try {
     const ui = await api("ui", {method: "PUT", body: {[key]: on}});
@@ -1585,10 +1593,9 @@ async function loadModels() {
       .map(x => ({x, kind: "gguf", role: kindOf(x)}))}));
   if (unmatched.length) groups.push({id: "gguf:~extras", sec: "llama.cpp · GGUF", name: "Unmatched extras",
     note: "drafts / projectors with no matching model downloaded", rows: unmatched.map(x => ({x, kind: "gguf", role: kindOf(x)}))});
-  // vLLM: model repos, then DFlash draft repos
-  const hfDflash = x => (x.repo || x.path).toLowerCase().includes("dflash");
-  [["hf:models", "Models", "Hugging Face repos vLLM loads by name", m.hf.filter(x => !hfDflash(x))],
-   ["hf:dflash", "DFlash drafts", "Hugging Face repos with dflash in the name", m.hf.filter(hfDflash)]]
+  // vLLM: model repos, then draft repos (by config.json architectures, see isHfDraft)
+  [["hf:models", "Models", "Hugging Face repos vLLM loads by name", m.hf.filter(x => !isHfDraft(x))],
+   ["hf:dflash", "DFlash drafts", "speculative-decoding draft repos (DFlash / EAGLE)", m.hf.filter(isHfDraft)]]
     .forEach(([id, name, note, items]) => items.length && groups.push({id, sec: "vLLM · Hugging Face", name, note,
       rows: items.map(x => ({x, kind: "hf", role: null}))}));
   let closed;
