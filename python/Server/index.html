@@ -316,6 +316,11 @@ td.path{word-break:break-all}
 .mgrp-b[hidden]{display:none}
 .mgrp table td{border-top:1px solid var(--line)}
 .mgrp table tr:first-child td{border-top:0}
+.msec{font:600 10px var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--cyan);margin:14px 2px 6px}
+.msec:first-child{margin-top:0}
+.mgrp-h .nm{text-transform:none;letter-spacing:.02em;font-size:12px}
+.mrole{display:inline-block;min-width:52px;margin-right:8px;font:600 9px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
+.mrole.r-model{color:var(--cyan)} .mrole.r-dflash{color:var(--violet)} .mrole.r-draft{color:var(--amber)} .mrole.r-mmproj{color:var(--lime)}
 .mgrp-all{margin-left:auto;background:none;border:0;padding:0;font:11px var(--mono);color:var(--cyan);cursor:pointer;letter-spacing:.04em;text-transform:none}
 .chip.model{color:var(--cyan)} .chip.draft{color:var(--violet)} .chip.mmproj{color:var(--amber)} .chip.use{background:var(--lime);color:#0a1400}
 .empty{color:var(--dim);font:12px var(--mono);padding:14px 0}
@@ -1532,45 +1537,81 @@ async function loadModels() {
   const m = S.models, d = m.disk;
   $("diskTxt").textContent = `${gb(d.used)} used · ${gb(d.free)} free`;
   $("diskBar").style.width = (d.used / d.total * 100).toFixed(1) + "%";
-  const row = (x, kind) => {
+  // what a GGUF is: from its header (role / arch), the file name only when the header can't be read
+  const fname = x => x.path.split("/").pop();
+  const kindOf = x => {
+    if (x.meta?.error) { const n = fname(x).toLowerCase(); return n.includes("mmproj") ? "mmproj" : n.includes("dflash") ? "dflash" : "model"; }
+    return x.role === "mmproj" ? "mmproj" : x.role === "draft" ? (x.meta?.arch === "dflash" ? "dflash" : "draft") : "model";
+  };
+  // "Qwen3.8-27B-UD-Q4_K_M.gguf" → "Qwen3.8-27B"; "mmproj-X-F16.gguf" → "X"
+  const stem = x => fname(x).replace(/\.gguf$/i, "").replace(/^mmproj[-_]?/i, "")
+    .replace(/[-_.](UD[-_])?(QAT[-_])?(I?Q\d[\w]*|F16|BF16|F32|MXFP4\w*)$/i, "");
+  const row = (x, kind, role) => {
     const meta = x.meta || {}, chips = kind === "hf"
       ? [!x.complete ? "partial" : x.kind === "hub" ? "hf cache" : "folder", meta.quant, meta.vision ? "vision" : null]
       : [meta.quant, meta.size_label, meta.error ? "unreadable" : null];
-    return `<tr><td class="path">${kind === "hf" ? `${esc(x.repo)}<br><span style="color:var(--dim);font-size:11px">${esc(x.path)}</span>` : esc(x.path)}</td>
+    return `<tr><td class="path">${role ? `<span class="mrole r-${role}">${role}</span>` : ""}${kind === "hf" ? `${esc(x.repo)}<br><span style="color:var(--dim);font-size:11px">${esc(x.path)}</span>` : esc(x.path)}</td>
     <td>${chips.filter(Boolean).map(c => `<span class="chip">${esc(c)}</span>`).join(" ")}${x.in_use ? ` <span class="chip use">in config</span>` : ""}</td>
     <td class="r">${gb(x.size)}</td><td class="r"><button class="btn sm danger" data-del="${esc(x.path)}" title="delete">Delete</button></td></tr>`;
   };
-  // groups by name: "dflash" in a GGUF file or HF repo name → DFlash, else "mmproj" in a GGUF file name →
-  // mmproj, everything else (GGUF files and HF repos) → Model
-  const fname = x => x.path.split("/").pop().toLowerCase();
-  const ggufGroup = x => fname(x).includes("dflash") ? "dflash" : fname(x).includes("mmproj") ? "mmproj" : "model";
+  // llama.cpp: one group per base model (same base_repo, else same file stem), its DFlash drafts,
+  // other drafts and mmproj projectors nested under it
+  const mains = m.gguf.filter(x => kindOf(x) === "model"), extras = m.gguf.filter(x => kindOf(x) !== "model");
+  const byKey = new Map();
+  mains.forEach(x => {
+    const key = x.meta?.base_repo || stem(x).toLowerCase();
+    if (!byKey.has(key)) byKey.set(key, {id: "gguf:" + key, name: x.meta?.base_repo?.split("/").pop() || stem(x), mains: [], extras: []});
+    byKey.get(key).mains.push(x);
+  });
+  const ggufGroups = [...byKey.values()], unmatched = [];
+  extras.forEach(e => {
+    const s = stem(e).toLowerCase(), b = e.meta?.base_repo, bn = e.meta?.basename;
+    // strong: same base repo, a shared file-name stem, or the same GGUF basename
+    let hit = ggufGroups.filter(g => g.mains.some(x => (b && x.meta?.base_repo === b)
+      || (s.length >= 4 && (s.startsWith(stem(x).toLowerCase()) || stem(x).toLowerCase().startsWith(s)))
+      || (bn && x.meta?.basename === bn)));
+    // weak, only when it singles out one model: the draft's / projector's width equals the model's
+    if (!hit.length) {
+      const w = kindOf(e) === "mmproj" ? e.meta?.projection_dim : e.meta?.embd;
+      const fit = w ? ggufGroups.filter(g => g.mains.some(x => x.meta?.embd === w)) : [];
+      if (fit.length === 1) hit = fit;
+    }
+    hit.length ? hit.forEach(g => g.extras.push(e)) : unmatched.push(e);
+  });
+  const ORDER = {model: 0, dflash: 1, draft: 2, mmproj: 3};
+  const groups = ggufGroups.sort((a, c) => a.name.localeCompare(c.name)).map(g => ({
+    id: g.id, sec: "llama.cpp · GGUF", name: g.name, note: "a model with the DFlash drafts and vision projectors that fit it",
+    rows: [...g.mains, ...g.extras].sort((a, c) => ORDER[kindOf(a)] - ORDER[kindOf(c)] || fname(a).localeCompare(fname(c)))
+      .map(x => ({x, kind: "gguf", role: kindOf(x)}))}));
+  if (unmatched.length) groups.push({id: "gguf:~extras", sec: "llama.cpp · GGUF", name: "Unmatched extras",
+    note: "drafts / projectors with no matching model downloaded", rows: unmatched.map(x => ({x, kind: "gguf", role: kindOf(x)}))});
+  // vLLM: model repos, then DFlash draft repos
   const hfDflash = x => (x.repo || x.path).toLowerCase().includes("dflash");
-  const groups = [
-    {id: "model", name: "Model", note: "GGUF files and Hugging Face repos without dflash or mmproj in the name",
-     items: [...m.gguf.filter(x => ggufGroup(x) === "model"), ...m.hf.filter(x => !hfDflash(x))]},
-    {id: "dflash", name: "DFlash", note: "GGUF files and Hugging Face repos with dflash in the name",
-     items: [...m.gguf.filter(x => ggufGroup(x) === "dflash"), ...m.hf.filter(hfDflash)]},
-    {id: "mmproj", name: "mmproj", note: "GGUF files with mmproj in the name", items: m.gguf.filter(x => ggufGroup(x) === "mmproj")},
-  ].filter(g => g.items.length);
+  [["hf:models", "Models", "Hugging Face repos vLLM loads by name", m.hf.filter(x => !hfDflash(x))],
+   ["hf:dflash", "DFlash drafts", "Hugging Face repos with dflash in the name", m.hf.filter(hfDflash)]]
+    .forEach(([id, name, note, items]) => items.length && groups.push({id, sec: "vLLM · Hugging Face", name, note,
+      rows: items.map(x => ({x, kind: "hf", role: null}))}));
   let closed;
   try { closed = new Set(JSON.parse(localStorage.getItem("io-model-groups-closed") || "[]")); } catch { closed = new Set(); }
   const saveClosed = () => { try { localStorage.setItem("io-model-groups-closed", JSON.stringify([...closed])); } catch {} };
-  $("models").innerHTML = groups.length ? groups.map(g => {
-    const open = !closed.has(g.id), size = g.items.reduce((s, x) => s + (x.size || 0), 0), used = g.items.some(x => x.in_use);
-    return `<div class="mgrp" data-g="${g.id}"><button class="mgrp-h" type="button" aria-expanded="${open}" aria-controls="mg-${g.id}" title="${esc(g.note)}">
-        <span class="car">▸</span><span>${esc(g.name)}</span><span class="ct">${g.items.length}</span>${used ? `<span class="dot" title="in the current config"></span>` : ""}<span class="sp"></span><span class="sz">${gb(size)}</span></button>
-      <div class="mgrp-b" id="mg-${g.id}"${open ? "" : " hidden"}><table><tbody>${g.items.map(x => row(x, m.hf.includes(x) ? "hf" : "gguf")).join("")}</tbody></table></div></div>`;
+  $("models").innerHTML = groups.length ? groups.map((g, i) => {
+    const open = !closed.has(g.id), size = g.rows.reduce((s, r) => s + (r.x.size || 0), 0), used = g.rows.some(r => r.x.in_use);
+    const sub = g.rows[0]?.role ? [...new Set(g.rows.map(r => r.role).filter(r => r !== "model"))].map(r => "+" + r).join(" ") : "";
+    const sec = i === 0 || groups[i - 1].sec !== g.sec ? `<div class="msec">${esc(g.sec)}</div>` : "";
+    return `${sec}<div class="mgrp" data-g="${esc(g.id)}" data-i="${i}"><button class="mgrp-h" type="button" aria-expanded="${open}" aria-controls="mg-${i}" title="${esc(g.note)}">
+        <span class="car">▸</span><span class="nm">${esc(g.name)}</span><span class="ct">${g.rows.length}${sub ? " · " + esc(sub) : ""}</span>${used ? `<span class="dot" title="in the current config"></span>` : ""}<span class="sp"></span><span class="sz">${gb(size)}</span></button>
+      <div class="mgrp-b" id="mg-${i}"${open ? "" : " hidden"}><table><tbody>${g.rows.map(r => row(r.x, r.kind, r.role)).join("")}</tbody></table></div></div>`;
   }).join("") : `<div class="empty">no models yet — download one below</div>`;
   const syncAll = () => { $("mAll").hidden = groups.length < 2; $("mAll").textContent = groups.every(g => closed.has(g.id)) ? "expand all" : "collapse all"; };
   $("models").querySelectorAll(".mgrp-h").forEach(b => b.onclick = () => {
     const id = b.parentElement.dataset.g, open = b.getAttribute("aria-expanded") !== "true";
-    b.setAttribute("aria-expanded", String(open)); $("mg-" + id).hidden = !open;
+    b.setAttribute("aria-expanded", String(open)); $("mg-" + b.parentElement.dataset.i).hidden = !open;
     open ? closed.delete(id) : closed.add(id); saveClosed(); syncAll();
   });
   $("mAll").onclick = () => {
     const collapse = $("mAll").textContent === "collapse all";
     groups.forEach(g => collapse ? closed.add(g.id) : closed.delete(g.id)); saveClosed();
-    $("models").querySelectorAll(".mgrp-h").forEach(b => { b.setAttribute("aria-expanded", String(!collapse)); $("mg-" + b.parentElement.dataset.g).hidden = collapse; });
+    $("models").querySelectorAll(".mgrp-h").forEach(b => { b.setAttribute("aria-expanded", String(!collapse)); $("mg-" + b.parentElement.dataset.i).hidden = collapse; });
     syncAll();
   };
   syncAll();
