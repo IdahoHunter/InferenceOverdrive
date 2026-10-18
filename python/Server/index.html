@@ -284,6 +284,22 @@ td{padding:8px 8px 8px 0;border-top:1px solid var(--line);vertical-align:middle}
 td.r,th.r{text-align:right}
 td.path{word-break:break-all}
 .chip{display:inline-block;font:700 9px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;padding:4px 6px;border-radius:5px;background:#151c27;color:var(--muted)}
+/* models panel: collapsible groups */
+.mgrp{border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.mgrp + .mgrp{margin-top:8px}
+.mgrp-h{display:flex;align-items:center;gap:9px;width:100%;padding:9px 12px;border:0;background:var(--panel2);color:var(--text);font:600 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;text-align:left;cursor:pointer}
+.mgrp-h:hover,.mgrp-h:focus-visible{background:color-mix(in oklab,var(--cyan) 7%,var(--panel2));outline:none}
+.mgrp-h .car{display:inline-block;width:10px;color:var(--muted);transition:transform .15s}
+.mgrp-h[aria-expanded="true"] .car{transform:rotate(90deg)}
+.mgrp-h .ct{color:var(--muted);font-weight:400;letter-spacing:.04em;text-transform:none}
+.mgrp-h .sp{flex:1}
+.mgrp-h .sz{color:var(--muted);font-weight:400;letter-spacing:0;text-transform:none}
+.mgrp-h .dot{width:7px;height:7px;border-radius:50%;background:var(--lime);box-shadow:0 0 6px var(--lime)}
+.mgrp-b{padding:2px 12px 6px}
+.mgrp-b[hidden]{display:none}
+.mgrp table td{border-top:1px solid var(--line)}
+.mgrp table tr:first-child td{border-top:0}
+.mgrp-all{margin-left:auto;background:none;border:0;padding:0;font:11px var(--mono);color:var(--cyan);cursor:pointer;letter-spacing:.04em;text-transform:none}
 .chip.model{color:var(--cyan)} .chip.draft{color:var(--violet)} .chip.mmproj{color:var(--amber)} .chip.use{background:var(--lime);color:#0a1400}
 .empty{color:var(--dim);font:12px var(--mono);padding:14px 0}
 
@@ -449,7 +465,7 @@ button.chip.dismiss:hover,button.chip.dismiss:focus-visible{filter:brightness(1.
     </div>
 
     <div class="panel">
-      <h2>Models <span class="tag" id="mTag">/models</span></h2>
+      <h2>Models <span class="tag" id="mTag">/models</span><button class="mgrp-all" id="mAll" type="button" hidden>collapse all</button></h2>
       <div class="disk"><span>Disk</span><span id="diskTxt">--</span></div>
       <div class="bar"><i id="diskBar" style="background:var(--violet)"></i></div>
       <div id="models" style="margin-top:14px"></div>
@@ -1443,11 +1459,45 @@ async function loadModels() {
   const m = S.models, d = m.disk;
   $("diskTxt").textContent = `${gb(d.used)} used · ${gb(d.free)} free`;
   $("diskBar").style.width = (d.used / d.total * 100).toFixed(1) + "%";
-  const row = (x, kind) => `<tr><td class="path">${kind === "hf" ? `${esc(x.repo)}<br><span style="color:var(--dim);font-size:11px">${esc(x.path)}</span>` : esc(x.path)}</td>
-    <td>${kind === "hf" ? `<span class="chip">${!x.complete ? "partial" : x.kind === "hub" ? "hf cache" : "folder"}</span>` : `<span class="chip ${x.role}">${x.role}</span>`}${x.in_use ? ` <span class="chip use">in config</span>` : ""}</td>
+  const row = (x, kind) => {
+    const meta = x.meta || {}, chips = kind === "hf"
+      ? [!x.complete ? "partial" : x.kind === "hub" ? "hf cache" : "folder", meta.quant, meta.vision ? "vision" : null]
+      : [meta.quant, meta.size_label, kind === "other" ? (meta.error ? "unreadable" : x.role) : null];
+    return `<tr><td class="path">${kind === "hf" ? `${esc(x.repo)}<br><span style="color:var(--dim);font-size:11px">${esc(x.path)}</span>` : esc(x.path)}</td>
+    <td>${chips.filter(Boolean).map(c => `<span class="chip">${esc(c)}</span>`).join(" ")}${x.in_use ? ` <span class="chip use">in config</span>` : ""}</td>
     <td class="r">${gb(x.size)}</td><td class="r"><button class="btn sm danger" data-del="${esc(x.path)}" title="delete">Delete</button></td></tr>`;
-  $("models").innerHTML = (m.gguf.length || m.hf.length) ? `<table><thead><tr><th>Path</th><th>Type</th><th class="r">Size</th><th></th></tr></thead><tbody>
-    ${m.gguf.map(x => row(x, "gguf")).join("")}${m.hf.map(x => row(x, "hf")).join("")}</tbody></table>` : `<div class="empty">no models yet — download one below</div>`;
+  };
+  // groups: llama.cpp targets, DFlash drafts, other drafts, vision projectors, vLLM repos, anything unreadable
+  const groups = [
+    {id: "main", name: "Main · GGUF", note: "llama.cpp target models", items: m.gguf.filter(x => x.role === "model" && !x.meta?.error), kind: "gguf"},
+    {id: "dflash", name: "DFlash", note: "DFlash draft models", items: m.gguf.filter(x => x.role === "draft" && x.meta?.arch === "dflash"), kind: "gguf"},
+    {id: "draft", name: "Other drafts", note: "EAGLE / other draft models", items: m.gguf.filter(x => x.role === "draft" && x.meta?.arch !== "dflash" && !x.meta?.error), kind: "gguf"},
+    {id: "mmproj", name: "mmproj", note: "vision projectors", items: m.gguf.filter(x => x.role === "mmproj" && !x.meta?.error), kind: "gguf"},
+    {id: "hf", name: "Hugging Face · vLLM", note: "repos in the hub cache", items: m.hf, kind: "hf"},
+    {id: "other", name: "Other", note: "GGUFs whose header couldn't be read", items: m.gguf.filter(x => x.meta?.error), kind: "other"},
+  ].filter(g => g.items.length);
+  let closed;
+  try { closed = new Set(JSON.parse(localStorage.getItem("io-model-groups-closed") || "[]")); } catch { closed = new Set(); }
+  const saveClosed = () => { try { localStorage.setItem("io-model-groups-closed", JSON.stringify([...closed])); } catch {} };
+  $("models").innerHTML = groups.length ? groups.map(g => {
+    const open = !closed.has(g.id), size = g.items.reduce((s, x) => s + (x.size || 0), 0), used = g.items.some(x => x.in_use);
+    return `<div class="mgrp" data-g="${g.id}"><button class="mgrp-h" type="button" aria-expanded="${open}" aria-controls="mg-${g.id}" title="${esc(g.note)}">
+        <span class="car">▸</span><span>${esc(g.name)}</span><span class="ct">${g.items.length}</span>${used ? `<span class="dot" title="in the current config"></span>` : ""}<span class="sp"></span><span class="sz">${gb(size)}</span></button>
+      <div class="mgrp-b" id="mg-${g.id}"${open ? "" : " hidden"}><table><tbody>${g.items.map(x => row(x, g.kind)).join("")}</tbody></table></div></div>`;
+  }).join("") : `<div class="empty">no models yet — download one below</div>`;
+  const syncAll = () => { $("mAll").hidden = groups.length < 2; $("mAll").textContent = groups.every(g => closed.has(g.id)) ? "expand all" : "collapse all"; };
+  $("models").querySelectorAll(".mgrp-h").forEach(b => b.onclick = () => {
+    const id = b.parentElement.dataset.g, open = b.getAttribute("aria-expanded") !== "true";
+    b.setAttribute("aria-expanded", String(open)); $("mg-" + id).hidden = !open;
+    open ? closed.delete(id) : closed.add(id); saveClosed(); syncAll();
+  });
+  $("mAll").onclick = () => {
+    const collapse = $("mAll").textContent === "collapse all";
+    groups.forEach(g => collapse ? closed.add(g.id) : closed.delete(g.id)); saveClosed();
+    $("models").querySelectorAll(".mgrp-h").forEach(b => { b.setAttribute("aria-expanded", String(!collapse)); $("mg-" + b.parentElement.dataset.g).hidden = collapse; });
+    syncAll();
+  };
+  syncAll();
   $("models").querySelectorAll("[data-del]").forEach(b => b.onclick = () => {
     const p = b.dataset.del;
     if (!confirm(`Permanently delete /models/${p}?`)) return;
