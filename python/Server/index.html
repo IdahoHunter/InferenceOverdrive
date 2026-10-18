@@ -180,6 +180,7 @@ dialog.tpl::backdrop{background:rgba(2,4,8,.72);backdrop-filter:blur(2px)}
 .boot{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:0 0 16px;padding:10px 12px;border:1px dashed var(--line2);border-radius:10px;font-size:12px;color:var(--muted)}
 .boot b{color:var(--text);font-family:var(--mono);font-weight:600}
 .bact{display:flex;gap:6px;flex-wrap:wrap}
+.status .boot{margin:12px 0 0}
 .tokbtn{font:600 9.5px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;border:1px solid var(--line2);border-radius:5px;padding:5px 7px;background:transparent;color:var(--dim);cursor:pointer}
 .tokbtn:hover{border-color:var(--muted);color:var(--text)}
 .tokbtn.ok{color:var(--lime);border-color:color-mix(in oklab,var(--lime) 45%,var(--line2))}
@@ -435,6 +436,7 @@ button.chip.dismiss:hover,button.chip.dismiss:focus-visible{filter:brightness(1.
       <button class="btn danger" id="stopBtn">Stop</button>
       <button class="btn ghost" id="revertBtn">Revert</button>
     </div>
+    <div class="boot" id="boot"></div>
     <div class="err" id="sErr"></div>
     <div class="smoke" id="smoke"></div>
   </div>
@@ -449,7 +451,6 @@ button.chip.dismiss:hover,button.chip.dismiss:focus-visible{filter:brightness(1.
         <label class="sw" title="When the model changes, prefill context size, sampling, draft/projector, parsers and memory settings from the model's metadata."><input type="checkbox" id="prefTune"><i></i>Auto-tune on model change</label>
         <button class="btn sm" id="tuneBtn" type="button">Suggest settings</button>
       </div>
-      <div class="boot" id="boot"></div>
       <div id="tune"></div>
       <div id="formEd"></div>
       <div id="issues"></div>
