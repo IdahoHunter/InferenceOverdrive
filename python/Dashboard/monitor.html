@@ -524,9 +524,12 @@ function resetForBackend() {
 async function pollLlama() {
   const t = performance.now();
   try {
+    // only llama-server has /slots: asking vLLM anyway puts a 404 line in its log twice a second, so
+    // wait until the backend is known (the first poll or two may go without lanes)
+    const llama = (S.m && S.m.kind === "llama.cpp") || (S.server && S.server.backend.kind === "llama.cpp");
     const [mr, sr] = await Promise.all([
       fetch(API + "/metrics", {cache: "no-store"}),
-      fetch(API + "/slots", {cache: "no-store"}).catch(() => null),
+      llama && !isVllm() ? fetch(API + "/slots", {cache: "no-store"}).catch(() => null) : null,
     ]);
     const loading = S.server && ["starting", "stopping"].includes(S.server.backend.state);
     if (mr.status === 503 || (!mr.ok && loading)) { S.status = "WARMING"; S.live = 0; renderStatus(); return; }
@@ -913,7 +916,8 @@ function frame() {
   requestAnimationFrame(frame);
 }
 
-pollProps();
+// no pollProps() here: which backend is running isn't known yet, and vLLM has no /props.
+// pollLlama asks for them once the first /metrics says which one it is.
 pollLlama(); setInterval(pollLlama, POLL);
 pollHW(); setInterval(pollHW, HW_POLL);
 pollServer(); setInterval(pollServer, 3000);
