@@ -158,7 +158,6 @@ VLLM_SCHEMA = [
     field("Model", "--quantization", "Quantization", "select",
           options=["", "awq", "awq_marlin", "gptq", "gptq_marlin", "compressed-tensors", "fp8", "bitsandbytes", "gguf"]),
     field("Model", "--dtype", "Dtype", "select", options=["", "auto", "half", "float16", "bfloat16"]),
-    field("Model", "--tokenizer", "Tokenizer", "str", "Repo id or path; needed for GGUF models."),
     field("Model", "--trust-remote-code", "Trust remote code", "bool"),
     field("Memory", "--max-model-len", "Context length", "int"),
     field("Memory", "--gpu-memory-utilization", "GPU memory fraction", "float",
