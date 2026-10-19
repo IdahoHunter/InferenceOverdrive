@@ -123,6 +123,7 @@ nav a.on{background:var(--text);color:var(--bg)}
 .be.sel .radio{border-color:var(--lime);background:radial-gradient(var(--lime) 40%,transparent 45%)}
 
 /* status card */
+.btn.warn{border-color:var(--amber);color:var(--amber)}
 .status-row{display:flex;gap:18px;flex-wrap:wrap;margin-bottom:12px}
 .status-row div{min-width:80px}
 .status-row .num{display:block;font-size:15px;font-weight:600;margin-top:6px;white-space:nowrap}
@@ -177,10 +178,7 @@ dialog.tpl::backdrop{background:rgba(2,4,8,.72);backdrop-filter:blur(2px)}
 @media (max-width:860px){.tpl-body{grid-template-columns:1fr}.tpl-bar{grid-template-columns:1fr}}
 
 /* boot default + hf token */
-.boot{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:0 0 16px;padding:10px 12px;border:1px dashed var(--line2);border-radius:10px;font-size:12px;color:var(--muted)}
-.boot b{color:var(--text);font-family:var(--mono);font-weight:600}
 .bact{display:flex;gap:6px;flex-wrap:wrap}
-.status .boot{margin:12px 0 0}
 .tokbtn{font:600 9.5px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;border:1px solid var(--line2);border-radius:5px;padding:5px 7px;background:transparent;color:var(--dim);cursor:pointer}
 .tokbtn:hover{border-color:var(--muted);color:var(--text)}
 .tokbtn.ok{color:var(--lime);border-color:color-mix(in oklab,var(--lime) 45%,var(--line2))}
@@ -247,7 +245,6 @@ dialog.cdlg{width:min(560px,calc(100vw - 32px))}
 .f.iss-removed :is(input,select,textarea,.seg),.f.iss-bad-value :is(input,select,textarea,.seg),.xrow.iss-removed .xf,.xrow.iss-bad-value .xf{border-color:var(--red)}
 .f.iss-deprecated :is(input,select,textarea,.seg),.xrow.iss-deprecated .xf{border-color:var(--amber)}
 .f small.iss{color:var(--red)} .f small.iss.deprecated{color:var(--amber)}
-.boot .bwarn{flex-basis:100%;color:var(--amber)}
 /* form editor */
 .fe{border:1px solid color-mix(in oklab,var(--cyan) 40%,var(--line2));border-radius:10px;padding:12px;margin:0 0 16px;background:color-mix(in oklab,var(--cyan) 3%,transparent);display:grid;gap:10px}
 .fe-h{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
@@ -431,12 +428,11 @@ button.chip.dismiss:hover,button.chip.dismiss:focus-visible{filter:brightness(1.
     <div class="bar"><i id="vramBar" style="background:var(--cyan)"></i></div>
     <div class="actions">
       <button class="btn primary" id="applyBtn">Apply &amp; restart</button>
-      <button class="btn" id="saveBtn">Save</button>
+      <button class="btn" id="bootBtn">Boot default</button>
       <button class="btn" id="startBtn">Start</button>
       <button class="btn danger" id="stopBtn">Stop</button>
       <button class="btn ghost" id="revertBtn">Revert</button>
     </div>
-    <div class="boot" id="boot"></div>
     <div class="err" id="sErr"></div>
     <div class="smoke" id="smoke"></div>
   </div>
@@ -1394,7 +1390,16 @@ $("applyBtn").onclick = () => {
   if ((b.state === "running" || b.state === "starting") && !confirm(`Restart now? ${b.kind} stops (requests in flight fail) and ${be} loads with the new settings.`)) return;
   act(async () => { await api("apply", {method: "POST", body: S.draft}); S.saved = clone(S.draft); }, `applying — ${be} restarting`);
 };
-$("saveBtn").onclick = () => act(async () => { await api("config", {method: "PUT", body: S.draft}); S.saved = clone(S.draft); }, "saved; takes effect on next start");
+// Boot default: save the settings on screen and make them what starts with the container
+$("bootBtn").onclick = () => {
+  const be = S.draft.backend, cur = `${be === "vllm" ? "vLLM" : "llama.cpp"} · ${modelOf(be, cfgOf(be))}`;
+  if (!confirm(`Save these settings and start ${cur} with them whenever the container starts?`)) return;
+  act(async () => {
+    await api("config", {method: "PUT", body: S.draft});
+    const b = await api("boot", {method: "PUT", body: {backend: be, config: cfgOf(be)}});
+    S.draft.boot = clone(b); S.saved = clone(S.draft);
+  }, `boot default saved: ${cur}`);
+};
 $("startBtn").onclick = () => act(async () => {
   if (isDirty()) { await api("config", {method: "PUT", body: S.draft}); S.saved = clone(S.draft); }
   await api("start", {method: "POST"});
@@ -1500,34 +1505,21 @@ $("tplDlg").addEventListener("cancel", e => {  // Esc
 
 // ── boot default: what starts with the container ────────────────────────
 const modelOf = (be, conf) => (conf?.values || {})[be === "vllm" ? "model" : "--model"] || "no model";
+// the Boot default button: ✓ when the settings on screen are the boot default; its tooltip says what
+// starts with the container (and why autostart may not run)
 function renderBoot() {
-  const st = S.state, boot = st.config.boot, envOn = st.boot?.autostart_env, be = S.draft.backend;
-  const cur = `${be === "vllm" ? "vLLM" : "llama.cpp"} · ${modelOf(be, cfgOf(be))}`;
-  let html;
-  if (envOn) {
-    html = `<span>Container start: <b>.env</b> (AUTOSTART=1) picks the backend and model${boot ? " — it overrides the boot default below" : ""}.</span>`;
-  } else if (boot) {
-    html = `<span>Boot default: <b>${esc(boot.backend === "vllm" ? "vLLM" : "llama.cpp")} · ${esc(modelOf(boot.backend, boot.config))}</b> starts with the container.</span>`;
-  } else {
-    html = `<span>No boot default — the container starts with no model loaded.</span>`;
-  }
-  if (st.boot?.skipped) html = `<span class="bwarn">⚠ ${esc(st.boot.skipped)}</span>` + html;
-  html += `<span class="bact">${st.boot?.fails >= 2 ? `<button class="btn sm" id="bootResume" title="Clear the failed-boot count: the boot default starts again on the next container start">Resume autostart</button>` : ""}<button class="btn sm" id="bootSet" title="Save the settings on screen (${esc(cur)}) as what starts with the container">Set current as boot default</button>${boot ? `<button class="btn sm ghost" id="bootClr">Clear</button>` : ""}</span>`;
-  if ($("boot").innerHTML !== html) {
-    $("boot").innerHTML = html;
-    $("bootSet").onclick = () => {
-      if (!confirm(`Start ${cur} with these settings whenever the container starts?`)) return;
-      act(async () => {
-        const b = await api("boot", {method: "PUT", body: {backend: be, config: cfgOf(be)}});
-        S.saved.boot = clone(b); S.draft.boot = clone(b);
-      }, "boot default saved");
-    };
-    if ($("bootResume")) $("bootResume").onclick = () => act(() => api("boot/resume", {method: "POST"}),
-      "autostart resumed — the boot default starts on the next container start");
-    if ($("bootClr")) $("bootClr").onclick = () => act(async () => {
-      await api("boot", {method: "DELETE"}); S.saved.boot = null; S.draft.boot = null;
-    }, "boot default cleared — the container will start with no model");
-  }
+  const st = S.state, boot = st.config.boot, be = S.draft.backend, b = $("bootBtn");
+  // compared without key order or empty values (unset and null mean the same: the engine default)
+  const canon = c => JSON.stringify([Object.entries(c?.values || {}).filter(([, v]) => v != null && v !== "").sort(([a], [z]) => a < z ? -1 : 1), c?.extra || []]);
+  const isBoot = !!boot && boot.backend === be && canon(boot.config) === canon(cfgOf(be));
+  const now = boot ? `${boot.backend === "vllm" ? "vLLM" : "llama.cpp"} · ${modelOf(boot.backend, boot.config)}` : "nothing (no model loads)";
+  const tip = [`Save the settings on screen and start them with the container.`, `Starts with the container now: ${now}.`,
+    st.boot?.autostart_env ? "AUTOSTART=1 in .env overrides it." : "",
+    st.boot?.skipped ? `⚠ ${st.boot.skipped}` : st.boot?.fails >= 2 ? "⚠ Autostart is paused after failed boots; saving a boot default resumes it." : ""];
+  const label = isBoot ? "Boot default ✓" : "Boot default";
+  if (b.textContent !== label) b.textContent = label;
+  b.title = tip.filter(Boolean).join("\n");
+  b.classList.toggle("warn", !!(st.boot?.skipped || st.boot?.fails >= 2));
 }
 
 // ── Hugging Face token ──────────────────────────────────────────────────

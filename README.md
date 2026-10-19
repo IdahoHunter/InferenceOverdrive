@@ -105,7 +105,7 @@ Then open **http://127.0.0.1:8888/** (it redirects to `/server/`) and:
 2. **Pick the engine and the model.** Click the **llama.cpp** card for GGUF files or the **vLLM** card for Hugging Face repos, then choose the model. Auto-tune fills in context size, sampling, draft/projector, parsers and memory settings, and shows why.
 3. **Apply & restart.** Watch it load in *Backend log*; the smoke test then checks tool calling and reasoning.
 4. **Chat.** Use the **Chat ↗** link (Open WebUI at http://127.0.0.1:3000), or call the API at `http://127.0.0.1:8888/v1`.
-5. Optional: **Set current as boot default** so this model loads every time the container starts.
+5. Optional: **Boot default** saves these settings and loads this model every time the container starts.
 
 ## Pages, ports and URLs
 
@@ -150,7 +150,7 @@ The Compose project is named `inference-overdrive`. That fixes the network (`inf
 
 ### Switch engines and edit every setting
 
-The top of `/server` has one card per engine, showing its installed version and an update badge, plus a **Backend** panel with what's running, its state, uptime, PID and VRAM. The buttons are **Apply & restart**, **Save** (takes effect on the next start), **Start**, **Stop** and **Revert** (discards unsaved edits).
+The top of `/server` has one card per engine, showing its installed version and an update badge, plus a **Backend** panel with what's running, its state, uptime, PID and VRAM. The buttons are **Apply & restart**, **Boot default** (saves the settings and makes them what starts with the container; shows ✓ when the settings on screen are the boot default, and its tooltip says what starts now), **Start**, **Stop** and **Revert** (discards unsaved edits).
 
 - **Parameters form.** A curated form per engine, grouped into sections (Model, Speculative, Context & memory, Throughput, Sampling defaults, Chat, Server, Multi-GPU for llama.cpp; Model, Memory, Scheduling, Speculative, Chat & tools, Multimodal, Multi-GPU for vLLM). An empty field means the engine's own default. On/off flags have three states: *default* / *on* / *off*.
 - **Full details on hover.** Hovering a field shows that flag's complete `--help` entry, read from the installed engine: aliases, value format, choices, default, and the `LLAMA_ARG_*` environment variable. It updates by itself when the engine is upgraded.
@@ -244,9 +244,9 @@ Both engines have a **Chat template** picker; empty means the model's own templa
 ### What starts with the container
 
 - **Nothing, by default.** The container is healthy as soon as `/monitor` and `/server` answer; loading a model is your choice.
-- **Boot default:** *Set current as boot default* (Backend panel) saves the engine and settings on screen to start on every container start. *Clear* removes it.
+- **Boot default:** the **Boot default** button (Backend panel) saves the engine and settings on screen to start on every container start. To remove it: `curl -X DELETE http://127.0.0.1:8888/server/api/boot`.
 - **`AUTOSTART=1` in `.env`** instead starts `BACKEND` with the model named in `.env` (`TARGET_FILE` / `DRAFT_FILE` / `MMPROJ_FILE` for llama.cpp, `VLLM_MODEL` for vLLM). It wins over the boot default.
-- **Guarded boot.** The boot settings are first checked against the installed engine's `--help`; a removed flag or invalid value skips the autostart, with the reason shown on the page. A boot attempt counts as failed until the engine reports ready. After **2 failed boots in a row** (crashes, or the container killed mid-load), autostart pauses until you click **Resume autostart** or save a new boot default. The settings are still loaded, so **Start** can try them by hand.
+- **Guarded boot.** The boot settings are first checked against the installed engine's `--help`; a removed flag or invalid value skips the autostart, with the reason shown on the page. A boot attempt counts as failed until the engine reports ready. After **2 failed boots in a row** (crashes, or the container killed mid-load), autostart pauses until you save a boot default again (the **Boot default** button turns amber, and its tooltip says why). The settings are still loaded, so **Start** can try them by hand.
 
 ### Update check
 
@@ -443,7 +443,7 @@ The image grew out of this setup, and the first-run defaults still describe it. 
 | `TensorFloat32 tensor cores … available but not enabled` | Harmless. A generic PyTorch hint; bf16/fp16 models don't use float32 matrix multiplies. |
 | Smoke test ✗ on tools | The tool-call parser doesn't match the model. Run *Suggest settings* or pick the parser that matches its chat template. |
 | *won't start* above the form after an upgrade | A flag was renamed or removed in the new engine version. Hover it for details, fix or remove it, then Apply. |
-| Autostart paused after failed boots | Fix the settings, then *Resume autostart* (or save a new boot default). |
+| Autostart paused after failed boots | Fix the settings, then click **Boot default** again. |
 | `docker compose up --build` fails pulling a base image with a digest / checksum mismatch | A Docker Desktop download glitch. Restart Docker Desktop and retry. |
 | Out of memory while building | Lower `BUILD_JOBS` in `.env` (for example `4`). |
 | Slow first load of a vLLM model | Normal: it compiles kernels once. They're cached in `state/cache/`, so later loads are faster. |
