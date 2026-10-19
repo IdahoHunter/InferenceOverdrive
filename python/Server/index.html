@@ -1146,23 +1146,37 @@ $("prefTune").onchange = e => setPref("auto_tune", e.target.checked);
 
 // ── auto-tune: prefill params from the model's metadata, with undo ─────────
 const MODEL_FLAG = {"llama.cpp": "--model", vllm: "model"};
-async function tune(reason) {
+// A different model starts clean: every setting back to the engine default and Additional flags
+// cleared (the GPU picks stay: they're about the hardware), then auto-tune, if on, fills in what fits
+// the new model. `before` is the config as it was with the old model, so Undo brings all of it back.
+function modelChanged(before, beforeExtra) {
+  const be = S.draft.backend, conf = cfgOf(be), flag = MODEL_FLAG[be];
+  conf.values = Object.fromEntries([[flag, conf.values[flag]], ["_gpus", conf.values._gpus]].filter(([, v]) => v != null));
+  conf.extra = [];
+  const snap = {before, beforeExtra};
+  if (autoTune()) { tune("auto", snap); return; }
+  S.lastTune = {be, ...snap, changes: [], cleared: true, notes: ["Auto-tune is off: set what this model needs, or press Suggest settings."],
+                model: conf.values[flag], reason: "reset", card: []};
+  renderParams(); changed(); renderTune();
+}
+async function tune(reason, snap) {
   const be = S.draft.backend, vals = cfgOf(be).values;
   if (!vals[MODEL_FLAG[be]]) return;
   $("tuneBtn").disabled = true; $("tuneBtn").textContent = "Reading model…";
+  if (snap) { renderParams(); changed(); }  // show the cleared form while the model is read
   try {
     const r = await api("suggest", {method: "POST", body: {backend: be, values: vals}});
-    const before = clone(vals), beforeExtra = clone(cfgOf(be).extra), changes = [];
+    const before = snap?.before ?? clone(vals), beforeExtra = snap?.beforeExtra ?? clone(cfgOf(be).extra), changes = [];
     for (const [k, v] of Object.entries(r.values)) {
       const old = vals[k] ?? null, nv = v ?? null;
       // same model, manual re-suggest: keep a served name the user picked
       if (reason === "manual" && (k === "--alias" || k === "--served-model-name") && old) continue;
       if (JSON.stringify(old) !== JSON.stringify(nv)) { changes.push([k, old, nv]); vals[k] = nv; }
     }
-    S.lastTune = {be, before, beforeExtra, changes, notes: r.notes, model: r.model, reason, card: r.card || []};
+    S.lastTune = {be, before, beforeExtra, changes, cleared: !!snap, notes: r.notes, model: r.model, reason, card: r.card || []};
     renderParams(); changed(); renderTune();
   } catch (e) {
-    S.lastTune = {be, error: e.message, reason}; renderTune();
+    S.lastTune = {be, error: e.message, reason, ...(snap ? {...snap, cleared: true} : {})}; renderTune();
   }
   $("tuneBtn").disabled = false; $("tuneBtn").textContent = "Suggest settings";
 }
@@ -1170,9 +1184,10 @@ function renderTune() {
   const t = S.lastTune, el = $("tune");
   if (!t || t.be !== S.draft.backend) { el.innerHTML = ""; return; }
   const show = v => v === null ? "default" : v === true ? "on" : v === false ? "off" : String(v);
-  el.innerHTML = t.error ? `<div class="tune"><div class="tune-h"><span>Couldn't read the model: ${esc(t.error)}</span><button class="btn sm ghost" id="tuneX">Dismiss</button></div></div>` :
-    `<div class="tune"><div class="tune-h"><span>${t.reason === "auto" ? "Auto-tuned" : "Suggested"} for <b>${esc(t.model)}</b> · ${t.changes.length} change${t.changes.length === 1 ? "" : "s"}</span>
-     <span>${t.changes.length ? `<button class="btn sm" id="tuneUndo">Undo</button> ` : ""}<button class="btn sm ghost" id="tuneX">Dismiss</button></span></div>
+  const cleared = t.cleared ? `<div class="chg"><span>Previous settings cleared for the new model${t.beforeExtra?.length ? `, with ${t.beforeExtra.length} additional flag${t.beforeExtra.length === 1 ? "" : "s"}` : ""} — Undo restores them</span></div>` : "";
+  el.innerHTML = t.error ? `<div class="tune"><div class="tune-h"><span>Couldn't read the model: ${esc(t.error)}</span><span>${t.cleared ? `<button class="btn sm" id="tuneUndo">Undo</button> ` : ""}<button class="btn sm ghost" id="tuneX">Dismiss</button></span></div>${cleared}</div>` :
+    `<div class="tune"><div class="tune-h"><span>${t.reason === "auto" ? "Auto-tuned" : t.reason === "reset" ? "New model" : "Suggested"} for <b>${esc(t.model)}</b> · ${t.changes.length} change${t.changes.length === 1 ? "" : "s"}</span>
+     <span>${t.changes.length || t.cleared ? `<button class="btn sm" id="tuneUndo">Undo</button> ` : ""}<button class="btn sm ghost" id="tuneX">Dismiss</button></span></div>${cleared}
      ${t.changes.length ? `<div class="chg">${t.changes.map(([k, o, n]) => `<span>${esc(k)} ${esc(show(o))} → <b>${esc(show(n))}</b></span>`).join("")}</div>` : ""}
      <ul>${t.notes.map(n => `<li class="${n.startsWith("⚠") ? "w" : ""}">${esc(n)}</li>`).join("")}</ul>${cardHTML(t)}</div>`;
   $("tuneX").onclick = () => { S.lastTune = null; renderTune(); };
@@ -1234,10 +1249,10 @@ function bindField(el) {
   if (el.dataset.kind === "hfmodel") {
     const sel = el.querySelector("select"), txt = el.querySelector(".hfcustom");
     const commit = v => {
-      const prev = vals[f.flag];
+      const conf = cfgOf(S.draft.backend), prev = vals[f.flag], before = clone(conf.values), beforeExtra = clone(conf.extra);
       vals[f.flag] = v || null;
       changed();
-      if (v && v !== prev && autoTune()) tune("auto");
+      if (v && v !== prev) modelChanged(before, beforeExtra);
     };
     sel.onchange = () => {
       if (sel.value === "__custom__") { S.hfCustom = true; txt.hidden = false; txt.focus(); return; }
@@ -1262,18 +1277,26 @@ function bindField(el) {
     });
     return;
   }
+  // the model field: snapshot the whole config just before the new model is stored (Undo restores it)
+  let before = null, beforeExtra = null;
+  const isModel = f.flag === MODEL_FLAG[S.draft.backend];
+  if (isModel) el.addEventListener("input", () => {
+    const conf = cfgOf(S.draft.backend);
+    if (!before) { before = clone(conf.values); beforeExtra = clone(conf.extra); }
+  });
   el.addEventListener("input", () => {
     const raw = el.value.trim();
     vals[f.flag] = raw === "" ? null : f.type === "int" ? parseInt(raw, 10) : f.type === "float" ? parseFloat(raw) : raw;
     if (Number.isNaN(vals[f.flag])) vals[f.flag] = null;
     changed();
   });
-  // a new model re-tunes (or at least re-filters its draft/projector pickers)
-  if (f.flag === MODEL_FLAG[S.draft.backend]) {
+  // a new model clears the old settings and re-tunes (see modelChanged)
+  if (isModel) {
     el.addEventListener("change", () => {
-      if (!el.value.trim()) return;
-      if (autoTune()) tune("auto");
-      else if (smartFilter() && f.type === "gguf") renderParams();
+      const v = el.value.trim(), snap = before, snapExtra = beforeExtra;
+      before = beforeExtra = null;
+      if (!v || !snap || v === snap[f.flag]) return;
+      modelChanged(snap, snapExtra);
     });
   }
 }
