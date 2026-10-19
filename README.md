@@ -258,7 +258,7 @@ Once a day (gear menu → *Daily update check*, on by default) the manager asks 
 
 - **Throughput:** live tokens/s gauge, prompt and generation rates.
 - **Speculative decoding:** acceptance per draft position. It's labelled *DFlash2 speculation* when a DFlash draft is active.
-- **Slots:** what each server slot is doing.
+- **Slots:** what each server slot is doing. vLLM has no `/slots` endpoint, so there each lane is one running request (up to `--max-num-seqs`), filled from `/metrics`. Each shows how long it has run and its share of tok/s and KV cache, and requests still waiting show in the panel header.
 - **Requests:** a live request log.
 - **System** and **Telemetry · last 2 min:** per-GPU utilization, VRAM, power vs. limit, temperature, fan, GPU and memory clocks, PCIe generation and width, plus CPU, RAM and the engine process's own RSS/CPU. There's one tab per GPU on multi-GPU machines.
 

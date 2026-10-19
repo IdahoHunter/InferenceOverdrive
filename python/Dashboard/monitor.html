@@ -517,7 +517,7 @@ async function pollServer() {
         document.querySelectorAll(".chatlink").forEach(a => a.href = chat); } catch { S.server = null; }
 }
 function resetForBackend() {
-  Object.assign(S, {props: null, m: null, mPrev: null, slots: [], track: {}, rowBase: null, peak: 0, ema: 0, log: []});
+  Object.assign(S, {props: null, m: null, mPrev: null, slots: [], track: {}, vseq: [], rowBase: null, peak: 0, ema: 0, log: []});
   renderLog();
 }
 
@@ -690,23 +690,15 @@ function renderLlama() {
   if (m.kind === "vllm") setText("kDecodes", fi(m.requests_done));
 
   renderLanes();
-  setText("foot", `poll ${POLL} ms · ${S.slots.length} slot${S.slots.length === 1 ? "" : "s"} · updated ${new Date(S.lastOk).toLocaleTimeString()}`);
+  const lanes = m.kind === "vllm" ? `${fi(m.requests_processing || 0)} running` : `${S.slots.length} slot${S.slots.length === 1 ? "" : "s"}`;
+  setText("foot", `poll ${POLL} ms · ${lanes} · updated ${new Date(S.lastOk).toLocaleTimeString()}`);
 }
 
 function renderLanes() {
   const L = $("lanes");
-  if (S.m && S.m.kind === "vllm") {
-    const run = S.m.requests_processing || 0, wait = S.m.requests_deferred || 0, kv = S.m.kv_usage || 0;
-    setText("slotTag", "SCHEDULER");
-    setHTML("lanes", `<div class="lane${run ? " gen" : ""}">
-      <div class="lane-h"><span class="lbl">vLLM scheduler</span><span class="state">${run ? "GEN" : "IDLE"}</span></div>
-      <div class="lane-rate"><span class="num">${run ? fx(S.ema) : "--"}</span><span class="lbl">tok/s</span></div>
-      <div class="ctx"><i class="g" style="width:${(kv * 100).toFixed(1)}%"></i></div>
-      <div class="lane-f"><span>KV cache <b>${(kv * 100).toFixed(1)}%</b></span><span>running <b>${fi(run)}</b> · waiting <b>${fi(wait)}</b></span></div></div>`);
-    return;
-  }
+  if (S.m && S.m.kind === "vllm") return renderVllmLanes();
   if (!S.slots.length) { setHTML("lanes", `<div class="empty">/slots unavailable (enable the /slots endpoint on /server)</div>`); return; }
-  if (L.children.length !== S.slots.length || L.querySelector(".empty")) {
+  if (L.children.length !== S.slots.length || L.querySelector(".empty") || L.querySelector("[data-vllm]")) {
     L.innerHTML = S.slots.map(s => `<div class="lane" data-id="${s.id}">
       <div class="lane-h"><span class="lbl">Slot ${s.id}</span><span class="state">IDLE</span></div>
       <div class="lane-rate"><span class="num">--</span><span class="lbl">tok/s</span></div>
@@ -729,6 +721,45 @@ function renderLanes() {
     el.querySelector(".b").innerHTML = proc ? `+<b>${fi(dec)}</b> tok · task ${s.id_task}` : `task ${s.id_task ?? "--"}`;
     // per-slot split is approximate with several busy slots; exact for one
     el.querySelector(".lane-rate .num").textContent = proc && dec > 0 ? fx(S.ema / Math.max(1, S.slots.filter(x => x.is_processing).length)) : "--";
+  });
+}
+
+// vLLM has no /slots: one lane per sequence it runs at once (--max-num-seqs of the running engine),
+// filled from /metrics' running count. Which request finished isn't reported, so a finished one frees
+// the oldest lane; per-lane tok/s and KV are the totals shared across the running requests.
+function vllmMaxSeqs() {
+  const argv = (S.server && S.server.backend.kind === "vllm" && S.server.backend.argv) || [];
+  const i = argv.indexOf("--max-num-seqs"), eq = argv.find(a => a.startsWith("--max-num-seqs="));
+  const v = parseInt(i >= 0 ? argv[i + 1] : eq ? eq.split("=")[1] : "", 10);
+  return v > 0 ? v : null;
+}
+function renderVllmLanes() {
+  const L = $("lanes"), run = S.m.requests_processing || 0, wait = S.m.requests_deferred || 0, kv = S.m.kv_usage || 0;
+  // four lanes (fewer if the engine allows fewer), more while more requests run, at most 16
+  const total = vllmMaxSeqs(), n = Math.min(Math.max(run, Math.min(total || 4, 4)), 16), now = Date.now();
+  S.vseq = S.vseq || [];
+  while (S.vseq.length < run) S.vseq.push(now);
+  while (S.vseq.length > run) S.vseq.shift();
+  setText("slotTag", `${total ?? "auto"} TOTAL${run > 16 ? ` · ${run} RUNNING, 16 SHOWN` : ""}${wait ? ` · ${wait} WAITING` : ""}`);
+  $("slotTag").title = "vLLM has no per-request /slots endpoint: lanes come from /metrics (requests running / waiting, KV cache). "
+    + "Per-lane tok/s and KV are the totals shared across the running requests.";
+  if (L.children.length !== n || !L.firstElementChild || !L.firstElementChild.dataset.vllm) {
+    L.innerHTML = Array.from({length: n}, (_, i) => `<div class="lane" data-vllm="1">
+      <div class="lane-h"><span class="lbl">Seq ${i}</span><span class="state">IDLE</span></div>
+      <div class="lane-rate"><span class="num">--</span><span class="lbl">tok/s</span></div>
+      <div class="ctx"><i class="p"></i><i class="g"></i></div>
+      <div class="lane-f"><span class="a"></span><span class="b"></span></div></div>`).join("");
+  }
+  [...L.children].forEach((el, i) => {
+    const active = i < run, state = !active ? "IDLE" : S.status === "PREFILL" ? "PREFILL" : "GEN";
+    el.className = "lane" + (state === "GEN" ? " gen" : state === "PREFILL" ? " pre" : "");
+    el.querySelector(".state").textContent = state;
+    el.querySelector(".lane-rate .num").textContent = state === "GEN" ? fx(S.ema / run) : "--";
+    const share = active ? kv / run : 0;
+    el.querySelector(".p").style.width = state === "PREFILL" ? (share * 100).toFixed(2) + "%" : "0";
+    el.querySelector(".g").style.width = state === "GEN" ? (share * 100).toFixed(2) + "%" : "0";
+    el.querySelector(".a").innerHTML = active ? `running <b>${dur((now - S.vseq[i]) / 1000)}</b>` : "free";
+    el.querySelector(".b").innerHTML = active ? `KV ≈ <b>${(share * 100).toFixed(1)}%</b>` : i === 0 ? `KV cache <b>${(kv * 100).toFixed(1)}%</b>` : "";
   });
 }
 
