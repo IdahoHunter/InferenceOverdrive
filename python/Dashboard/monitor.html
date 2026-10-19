@@ -142,7 +142,13 @@ nav a.on{background:var(--text);color:var(--bg)}
 .kv div b{font:600 12px var(--mono);color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 /* ── middle ─────────────────────────────────────────── */
-.mid{display:grid;grid-template-columns:2.1fr 1fr;gap:12px}
+.mid{display:grid;grid-template-columns:1fr;gap:12px}
+/* panels for features that are off (no speculative decoding, no /slots) are hidden */
+.off{display:none!important}
+.hero.nospec{grid-template-columns:1.2fr 1fr}
+table.nospec th:nth-child(7),table.nospec td:nth-child(7){display:none}
+.slots{display:grid}
+.slots .lanes{grid-template-columns:repeat(auto-fill,minmax(250px,1fr))}
 .chart{position:relative;height:280px}
 .chart canvas{position:absolute;inset:0;width:100%;height:100%}
 .legend{display:flex;gap:14px;font:600 10px/1 var(--mono);letter-spacing:.1em;color:var(--muted)}
@@ -196,12 +202,14 @@ footer a{color:var(--muted)}
   .kpi:last-child{grid-column:span 2}
   .hero{grid-template-columns:1fr 1fr}
   .tach{grid-column:1/-1}
+  .hero.nospec{grid-template-columns:1fr 1fr}
+  .hero.nospec .tach{grid-column:auto}
   .mid,.bottom{grid-template-columns:1fr}
 }
 @media (max-width:720px){
   body{padding:10px}
   .kpis{grid-template-columns:repeat(2,1fr)}
-  .hero{grid-template-columns:1fr}
+  .hero,.hero.nospec{grid-template-columns:1fr}
   .rings{grid-template-columns:repeat(2,1fr);max-width:320px;margin:0 auto}
   .chart{height:220px}
   .gain{font-size:44px}
@@ -243,7 +251,7 @@ footer a{color:var(--muted)}
   <div class="kpi"><div class="lbl">Active · Queued</div><div class="v" id="kQueue">--</div></div>
 </section>
 
-<section class="hero">
+<section class="hero" id="hero">
   <div class="panel tach" id="tachPanel">
     <h2>Throughput <span class="tag">LIVE</span></h2>
     <div class="badge" id="peakBadge">NEW PEAK</div>
@@ -271,7 +279,7 @@ footer a{color:var(--muted)}
     </div>
   </div>
 
-  <div class="panel">
+  <div class="panel" id="specPanel">
     <h2><span id="specTitle">Speculative decoding</span> <span class="tag" id="specTag">SESSION</span></h2>
     <div class="spec-top">
       <div>
@@ -322,17 +330,13 @@ footer a{color:var(--muted)}
     </h2>
     <div class="chart"><canvas id="chart"></canvas></div>
   </div>
-  <div class="panel">
-    <h2>Slots <span class="tag" id="slotTag">--</span></h2>
-    <div class="lanes" id="lanes"><div class="empty">waiting for /slots…</div></div>
-  </div>
 </section>
 
 <section class="bottom">
   <div class="panel">
     <h2>Requests <span class="tag" id="reqTag">0</span></h2>
     <div class="tbl">
-      <table>
+      <table id="reqTbl">
         <thead><tr><th>Time</th><th>Prompt</th><th>Cached</th><th>Generated</th><th>Gen tok/s</th><th>Prefill tok/s</th><th>Accept</th><th>Wall</th></tr></thead>
         <tbody id="reqs"></tbody>
       </table>
@@ -358,6 +362,13 @@ footer a{color:var(--muted)}
       <div>Load avg<b id="load">--</b></div>
       <div>Cores<b id="cpuCores">--</b></div>
     </div>
+  </div>
+</section>
+
+<section class="slots" id="slotsSec">
+  <div class="panel">
+    <h2>Slots <span class="tag" id="slotTag">--</span></h2>
+    <div class="lanes" id="lanes"><div class="empty">waiting for the backend…</div></div>
   </div>
 </section>
 
@@ -517,7 +528,7 @@ async function pollServer() {
         document.querySelectorAll(".chatlink").forEach(a => a.href = chat); } catch { S.server = null; }
 }
 function resetForBackend() {
-  Object.assign(S, {props: null, m: null, mPrev: null, slots: [], track: {}, vseq: [], rowBase: null, peak: 0, ema: 0, log: []});
+  Object.assign(S, {props: null, m: null, mPrev: null, slots: [], slotsTried: false, track: {}, vseq: [], rowBase: null, peak: 0, ema: 0, log: []});
   renderLog();
 }
 
@@ -537,6 +548,7 @@ async function pollLlama() {
     S.mPrev = S.m; S.mPrevT = S.mT; S.m = parseMetrics(await mr.text()); S.mT = t;
     const slots = sr && sr.ok ? await sr.json().catch(() => null) : null;
     S.slots = Array.isArray(slots) ? slots : [];
+    if (sr) S.slotsTried = true;  // asked llama-server at least once (an empty answer then means --no-slots)
     S.lastOk = Date.now();
     if (!S.props) pollProps();
   } catch { S.status = S.server && S.server.backend.state === "stopped" ? "STOPPED" : "OFFLINE"; S.live = 0; renderStatus(); return; }
@@ -683,9 +695,20 @@ function renderLlama() {
   let sp = S.slots[0] && S.slots[0].params && S.slots[0].params["speculative.types"];
   sp = sp ? sp.split(",").filter(x => x !== "none").join("+") || "off" : null;
   if (m.kind === "vllm") {
-    const sc = S.server && S.server.config.vllm.values["--speculative-config"];
+    // what the running engine was started with (the saved config may have changed since)
+    const argv = (S.server && S.server.backend.kind === "vllm" && S.server.backend.argv) || null, i = argv ? argv.indexOf("--speculative-config") : -1;
+    const sc = argv ? (i >= 0 ? argv[i + 1] : null) : S.server && S.server.config.vllm.values["--speculative-config"];
     try { sp = sc ? JSON.parse(sc).method || "on" : "off"; } catch { sp = "on"; }
   }
+  // llama-server without /slots: the running command line says whether a draft / spec type is set
+  if (!sp && m.kind !== "vllm" && S.server && S.server.backend.kind === "llama.cpp" && S.server.backend.argv) {
+    sp = S.server.backend.argv.some(a => /^(--spec-|-md$|--model-draft$|--draft)/.test(a)) ? "on" : "off";
+  }
+  // speculative decoding off: hide its panel and the Requests table's Accept column
+  const specOff = sp === "off";
+  $("specPanel").classList.toggle("off", specOff);
+  $("hero").classList.toggle("nospec", specOff);
+  $("reqTbl").classList.toggle("nospec", specOff);
   setHTML("chipSpec", `spec <b>${sp || "--"}</b>`);
   setText("specTitle", sp && sp.includes("dflash") ? "DFlash2 speculation" : "Speculative decoding");
   setText("chipBackend", m.kind === "vllm" ? "vLLM" : "llama.cpp");
@@ -699,8 +722,11 @@ function renderLlama() {
 
 function renderLanes() {
   const L = $("lanes");
+  // llama-server running without /slots (--no-slots): no lanes to show, so no panel
+  const noSlots = !!(S.m && S.m.kind !== "vllm" && !S.slots.length && S.server && S.server.backend.state === "running" && S.slotsTried);
+  $("slotsSec").classList.toggle("off", noSlots);
   if (S.m && S.m.kind === "vllm") return renderVllmLanes();
-  if (!S.slots.length) { setHTML("lanes", `<div class="empty">/slots unavailable (enable the /slots endpoint on /server)</div>`); return; }
+  if (!S.slots.length) { setHTML("lanes", `<div class="empty">waiting for /slots…</div>`); return; }
   if (L.children.length !== S.slots.length || L.querySelector(".empty") || L.querySelector("[data-vllm]")) {
     L.innerHTML = S.slots.map(s => `<div class="lane" data-id="${s.id}">
       <div class="lane-h"><span class="lbl">Slot ${s.id}</span><span class="state">IDLE</span></div>
