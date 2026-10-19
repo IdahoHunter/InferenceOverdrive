@@ -143,9 +143,9 @@ nav a.on{background:var(--text);color:var(--bg)}
 
 /* ── middle ─────────────────────────────────────────── */
 .mid{display:grid;grid-template-columns:1fr;gap:12px}
+.mid.spec{grid-template-columns:2.1fr 1fr}
 /* panels for features that are off (no speculative decoding, no /slots) are hidden */
 .off{display:none!important}
-.hero.nospec{grid-template-columns:1.2fr 1fr}
 table.nospec th:nth-child(7),table.nospec td:nth-child(7){display:none}
 .slots{display:grid}
 .slots .lanes{grid-template-columns:repeat(auto-fill,minmax(250px,1fr))}
@@ -172,7 +172,7 @@ table.nospec th:nth-child(7),table.nospec td:nth-child(7){display:none}
 .lane-f b{color:var(--text);font-weight:600}
 
 /* ── bottom ─────────────────────────────────────────── */
-.bottom{display:grid;grid-template-columns:2.1fr 1fr;gap:12px}
+.bottom{display:grid;grid-template-columns:1fr;gap:12px}
 .tbl{overflow:auto;max-height:340px}
 table{width:100%;border-collapse:collapse;font:12px var(--mono);font-variant-numeric:tabular-nums}
 th{position:sticky;top:0;background:var(--panel2);text-align:right;font:600 9.5px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dim);padding:0 10px 10px;white-space:nowrap}
@@ -202,14 +202,12 @@ footer a{color:var(--muted)}
   .kpi:last-child{grid-column:span 2}
   .hero{grid-template-columns:1fr 1fr}
   .tach{grid-column:1/-1}
-  .hero.nospec{grid-template-columns:1fr 1fr}
-  .hero.nospec .tach{grid-column:auto}
-  .mid,.bottom{grid-template-columns:1fr}
+  .mid,.mid.spec,.bottom{grid-template-columns:1fr}
 }
 @media (max-width:720px){
   body{padding:10px}
   .kpis{grid-template-columns:repeat(2,1fr)}
-  .hero,.hero.nospec{grid-template-columns:1fr}
+  .hero{grid-template-columns:1fr}
   .rings{grid-template-columns:repeat(2,1fr);max-width:320px;margin:0 auto}
   .chart{height:220px}
   .gain{font-size:44px}
@@ -279,25 +277,6 @@ footer a{color:var(--muted)}
     </div>
   </div>
 
-  <div class="panel" id="specPanel">
-    <h2><span id="specTitle">Speculative decoding</span> <span class="tag" id="specTag">SESSION</span></h2>
-    <div class="spec-top">
-      <div>
-        <div class="gain num" id="sGain">--<small>×</small></div>
-        <div class="lbl" style="margin-top:8px">tokens per target pass</div>
-      </div>
-      <div class="spec-side">
-        <span class="lbl">Acceptance</span><span class="num" id="sAcc">--</span>
-      </div>
-    </div>
-    <div class="funnel" id="funnel"></div>
-    <div class="spec-stats">
-      <div><span class="lbl">Draft rounds</span><span class="num" id="sDrafts">--</span></div>
-      <div><span class="lbl">Drafted</span><span class="num" id="sDrafted">--</span></div>
-      <div><span class="lbl">Accepted</span><span class="num" id="sAccepted">--</span></div>
-    </div>
-  </div>
-
   <div class="panel">
     <h2><span id="gpuName">GPU</span> <span style="display:flex;gap:6px;align-items:center"><span class="gtabs" id="gpuTabs"></span><span class="tag" id="gpuPstate">--</span></span></h2>
     <div class="rings">
@@ -315,32 +294,6 @@ footer a{color:var(--muted)}
       <div>PCIe<b id="gPcie">--</b></div>
       <div>Driver<b id="gDrv">--</b></div>
       <div>Board power<b id="gPwr">--</b></div>
-    </div>
-  </div>
-</section>
-
-<section class="mid">
-  <div class="panel">
-    <h2>Telemetry · last 2 min
-      <span class="legend">
-        <span style="color:var(--lime)"><i></i>GEN TOK/S</span>
-        <span style="color:var(--amber)"><i></i><span id="gpuLegend">GPU %</span></span>
-        <span style="color:var(--violet)"><i></i>REQUEST</span>
-      </span>
-    </h2>
-    <div class="chart"><canvas id="chart"></canvas></div>
-  </div>
-</section>
-
-<section class="bottom">
-  <div class="panel">
-    <h2>Requests <span class="tag" id="reqTag">0</span></h2>
-    <div class="tbl">
-      <table id="reqTbl">
-        <thead><tr><th>Time</th><th>Prompt</th><th>Cached</th><th>Generated</th><th>Gen tok/s</th><th>Prefill tok/s</th><th>Accept</th><th>Wall</th></tr></thead>
-        <tbody id="reqs"></tbody>
-      </table>
-      <div class="empty" id="reqEmpty">no completed requests yet — send one and watch the gauge</div>
     </div>
   </div>
   <div class="panel sys">
@@ -361,6 +314,50 @@ footer a{color:var(--muted)}
       <div>Uptime<b id="pUp">--</b></div>
       <div>Load avg<b id="load">--</b></div>
       <div>Cores<b id="cpuCores">--</b></div>
+    </div>
+  </div>
+</section>
+
+<section class="mid" id="mid">
+  <div class="panel">
+    <h2>Telemetry · last 2 min
+      <span class="legend">
+        <span style="color:var(--lime)"><i></i>GEN TOK/S</span>
+        <span style="color:var(--amber)"><i></i><span id="gpuLegend">GPU %</span></span>
+        <span style="color:var(--violet)"><i></i>REQUEST</span>
+      </span>
+    </h2>
+    <div class="chart"><canvas id="chart"></canvas></div>
+  </div>
+  <div class="panel" id="specPanel">
+    <h2><span id="specTitle">Speculative decoding</span> <span class="tag" id="specTag">SESSION</span></h2>
+    <div class="spec-top">
+      <div>
+        <div class="gain num" id="sGain">--<small>×</small></div>
+        <div class="lbl" style="margin-top:8px">tokens per target pass</div>
+      </div>
+      <div class="spec-side">
+        <span class="lbl">Acceptance</span><span class="num" id="sAcc">--</span>
+      </div>
+    </div>
+    <div class="funnel" id="funnel"></div>
+    <div class="spec-stats">
+      <div><span class="lbl">Draft rounds</span><span class="num" id="sDrafts">--</span></div>
+      <div><span class="lbl">Drafted</span><span class="num" id="sDrafted">--</span></div>
+      <div><span class="lbl">Accepted</span><span class="num" id="sAccepted">--</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="bottom">
+  <div class="panel">
+    <h2>Requests <span class="tag" id="reqTag">0</span></h2>
+    <div class="tbl">
+      <table id="reqTbl">
+        <thead><tr><th>Time</th><th>Prompt</th><th>Cached</th><th>Generated</th><th>Gen tok/s</th><th>Prefill tok/s</th><th>Accept</th><th>Wall</th></tr></thead>
+        <tbody id="reqs"></tbody>
+      </table>
+      <div class="empty" id="reqEmpty">no completed requests yet — send one and watch the gauge</div>
     </div>
   </div>
 </section>
@@ -704,10 +701,11 @@ function renderLlama() {
   if (!sp && m.kind !== "vllm" && S.server && S.server.backend.kind === "llama.cpp" && S.server.backend.argv) {
     sp = S.server.backend.argv.some(a => /^(--spec-|-md$|--model-draft$|--draft)/.test(a)) ? "on" : "off";
   }
-  // speculative decoding off: hide its panel and the Requests table's Accept column
+  // speculative decoding: its panel sits next to Telemetry when it's on; off hides it and the
+  // Requests table's Accept column
   const specOff = sp === "off";
   $("specPanel").classList.toggle("off", specOff);
-  $("hero").classList.toggle("nospec", specOff);
+  $("mid").classList.toggle("spec", !specOff);
   $("reqTbl").classList.toggle("nospec", specOff);
   setHTML("chipSpec", `spec <b>${sp || "--"}</b>`);
   setText("specTitle", sp && sp.includes("dflash") ? "DFlash2 speculation" : "Speculative decoding");
