@@ -55,6 +55,7 @@ services:
       # vLLM turns pinned host memory off under WSL2 unless told otherwise; pinned
       # (page-locked) buffers make host<->GPU copies faster. Set 0 in .env to disable.
       VLLM_WSL2_ENABLE_PIN_MEMORY: ${VLLM_WSL2_ENABLE_PIN_MEMORY:-1}
+      VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
     # vLLM moves tensors between its API and engine processes through /dev/shm.
@@ -66,7 +67,7 @@ services:
   # The chat UI for both backends (the Chat link). Starts with `docker compose up -d`;
   # it waits for llm-server to be healthy, which doesn't need a model loaded.
   open-webui:
-    image: ghcr.io/open-webui/open-webui:main
+    image: ghcr.io/open-webui/open-webui:v0.13.0
     container_name: inference-overdrive-open-webui
     ports:
       # Open WebUI itself listens on 8080 inside its container.
@@ -84,5 +85,5 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-volumes:
+ volumes:
   open-webui-data:
